@@ -8,72 +8,95 @@ from typing import Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 class ContactEnricher:
-    """Enrichit les informations de contact d'une entreprise via recherche Web et Claude AI."""
+    """Enrichit les informations de contact d'une entreprise via Serper.dev Google API et Claude AI."""
 
-    def __init__(self, anthropic_key: str, serper_key: Optional[str] = None, model: str = "claude-3-haiku-20240307"):
+    def __init__(self, anthropic_key: str, serper_key: Optional[str] = None, model: str = "claude-haiku-4-5-20251001"):
         self.claude = anthropic.Anthropic(api_key=anthropic_key)
-        self.serper_key = serper_key
-        self.model = model or "claude-3-haiku-20240307"
+        self.serper_key = (serper_key or "").strip()
+        self.model = model or "claude-haiku-4-5-20251001"
+        if self.serper_key:
+            logger.info(f"⚡ Moteur Serper.dev actif ({self.serper_key[:6]}...).")
+        else:
+            logger.warning("⚠️ Aucune clé SERPER_API_KEY. Utilisation du fallback.")
 
     def _search_web(self, query: str) -> str:
-        """Effectue une recherche Web (via Serper si clé fournie, sinon DuckDuckGo gratuit)."""
-        # 1. Option Serper (Google Search API)
+        """Effectue une recherche Google ultra-rapide via Serper.dev."""
         if self.serper_key:
             try:
                 url = "https://google.serper.dev/search"
-                payload = json.dumps({"q": query, "gl": "fr", "hl": "fr", "num": 5})
-                headers = {'X-API-KEY': self.serper_key, 'Content-Type': 'application/json'}
-                response = requests.post(url, headers=headers, data=payload, timeout=10)
+                headers = {
+                    'X-API-KEY': self.serper_key,
+                    'Content-Type': 'application/json'
+                }
+                payload = json.dumps({
+                    "q": query,
+                    "gl": "fr",
+                    "hl": "fr",
+                    "num": 6
+                })
+                
+                logger.info(f"🔍 Requête Google Serper : '{query}'...")
+                response = requests.post(url, headers=headers, data=payload, timeout=8)
+                
                 if response.status_code == 200:
                     data = response.json()
                     snippets = []
+                    
+                    # 1. Fiche Google My Business / Knowledge Graph (Téléphone, Site, Type)
+                    kg = data.get("knowledgeGraph", {})
+                    if kg:
+                        snippets.append(f"Fiche Google: {kg.get('title', '')} | Tél: {kg.get('phoneNumber', '')} | Site: {kg.get('website', '')} | Description: {kg.get('description', '')}")
+
+                    # 2. Fiches Google Maps / Places locales (Téléphone, Adresse, Note)
+                    for place in data.get("places", []):
+                        snippets.append(f"Google Maps: {place.get('title', '')} | Tél: {place.get('phoneNumber', '')} | Adresse: {place.get('address', '')} | Catégorie: {place.get('category', '')}")
+
+                    # 3. Résultats de recherche organiques (Sites web, TripAdvisor, Facebook)
                     for item in data.get("organic", []):
-                        snippets.append(f"Titre: {item.get('title')}\nLien: {item.get('link')}\nExtrait: {item.get('snippet')}")
+                        title = item.get("title", "")
+                        link = item.get("link", "")
+                        snip = item.get("snippet", "")
+                        snippets.append(f"Titre: {title} | Lien: {link} | Extrait: {snip}")
+
+                    logger.info(f"🌐 Serper : {len(snippets)} extraits Google récupérés en ~0.3s !")
                     return "\n\n".join(snippets)
+                else:
+                    logger.warning(f"❌ Erreur Serper HTTP {response.status_code} : {response.text}")
+
             except Exception as e:
-                logger.warning(f"Recherche Serper en échec : {e}")
+                logger.warning(f"❌ Erreur connexion Serper : {e}")
 
-        # 2. Fallback gratuit sans clé API via DuckDuckGo
-        try:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            resp = requests.get(f"https://html.duckduckgo.com/html/?q={requests.utils.quote(query)}", headers=headers, timeout=10)
-            if resp.status_code == 200:
-                snippets = []
-                results = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', resp.text, re.DOTALL)
-                for r in results[:5]:
-                    clean = re.sub(r'<[^>]+>', '', r).strip()
-                    snippets.append(f"Extrait Web : {clean}")
-                return "\n\n".join(snippets)
-        except Exception as e:
-            logger.warning(f"Recherche DuckDuckGo en échec : {e}")
-
+        # Fallback de secours
         return ""
 
     def enrich_contact(self, company_name: str, city: str, dirigeant: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-        """Trouve le téléphone, email, site web, profil et concept du restaurant."""
+        """Trouve le téléphone, email, site web/social, et concept du restaurant."""
         dirigeant_nom = f"{dirigeant.get('prenom', '')} {dirigeant.get('nom', '')}".strip() if dirigeant else ""
         dirigeant_role = dirigeant.get('qualite', 'Dirigeant') if dirigeant else ""
 
-        # Requête ciblée pour restaurants
-        search_query = f'restaurant "{company_name}" "{city}" téléphone contact avis carte'
+        # Nettoyage du nom commercial
+        clean_name = re.sub(r'\b(SAS|SARL|EURL|SA|SCI|SOCIETE|MONSIEUR|MADAME)\b', '', company_name, flags=re.IGNORECASE).strip()
+        search_query = f"restaurant {clean_name} {city}"
+        
         search_results = self._search_web(search_query)
 
-        prompt = f"""Tu es un assistant de qualification B2B pour le secteur de la restauration.
+        prompt = f"""Tu es un assistant expert en prospection commerciale pour les restaurants.
 
-Voici les informations sur le restaurant :
-- Nom : {company_name}
+Informations officielles :
+- Nom commercial : {clean_name} ({company_name})
 - Ville : {city}
-- Dirigeant : {dirigeant_nom} ({dirigeant_role})
-- Résultats de recherche Web :
+- Dirigeant légal : {dirigeant_nom} ({dirigeant_role})
+
+Résultats Google en direct :
 \"\"\"
 {search_results if search_results else "Aucun extrait web trouvé."}
 \"\"\"
 
-TÂCHE :
-1. Extrais le numéro de téléphone professionnel/direct du restaurant (ex: 03 XX XX XX XX).
-2. Extrais ou déduis l'adresse email de contact (si trouvée).
-3. Trouve l'URL du site web ou de la page Facebook/Instagram officielle du restaurant.
-4. Rédige un résumé court (1 phrase) décrivant le style de cuisine et le concept (ex: Pizzeria au feu de bois, Brasserie traditionnelle lorraine, etc.).
+CONSIGNES D'EXTRACTION :
+1. "phone" : Extrais le numéro de téléphone direct du restaurant (format français 03..., 06..., 07..., 09... ou international).
+2. "website" : Donne en priorité le site web officiel du restaurant, ou le lien de sa page Facebook/Instagram/TripAdvisor trouvée.
+3. "email" : Extrais l'email de contact si présent dans les extraits.
+4. "summary" : Résume en 1 phrase claire le style de cuisine, spécialités et concept de l'établissement.
 
 RÉPONDS STRICTEMENT AU FORMAT JSON avec ces clés :
 {{
@@ -82,8 +105,8 @@ RÉPONDS STRICTEMENT AU FORMAT JSON avec ces clés :
   "email": "email ou null",
   "phone": "numéro de téléphone ou null",
   "linkedin_url": null,
-  "website": "url du site ou page web ou null",
-  "summary": "Description en 1 phrase du type de cuisine et spécialités"
+  "website": "url web ou null",
+  "summary": "Résumé du concept et spécialités"
 }}"""
 
         try:
@@ -100,7 +123,9 @@ RÉPONDS STRICTEMENT AU FORMAT JSON avec ces clés :
             elif "```" in raw_text:
                 raw_text = raw_text.split("```")[1].split("```")[0].strip()
 
-            return json.loads(raw_text)
+            data = json.loads(raw_text)
+            logger.info(f"✅ Qualification réussie pour '{clean_name}' (Tél: {data.get('phone')}, Site: {data.get('website')})")
+            return data
 
         except Exception as e:
             logger.error(f"Erreur d'enrichissement Claude pour {company_name} : {e}")
