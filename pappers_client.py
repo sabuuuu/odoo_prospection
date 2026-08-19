@@ -19,15 +19,13 @@ class PappersClient:
         limit: int = 10,
         page: int = 1
     ) -> List[Dict[str, Any]]:
-        """
-        Recherche des entreprises françaises selon des critères ciblés.
-        """
+        """Recherche des entreprises françaises selon des critères ciblés."""
         params = {
             "api_token": self.api_key,
             "par_page": min(limit, 100),
             "page": page,
             "precision": "standard",
-            "statut_rcs": "inscrit",  # Uniquement les entreprises en activité
+            "statut_rcs": "inscrit",
             "entreprise_cessee": "false"
         }
 
@@ -45,7 +43,7 @@ class PappersClient:
 
             results = []
             for item in data.get("resultats", []):
-                # Extraction du dirigeant / représentant légal principal
+                # Dirigeant principal
                 representants = item.get("representants", [])
                 dirigeant = None
                 if representants:
@@ -53,19 +51,39 @@ class PappersClient:
                     dirigeant = {
                         "nom": rep.get("nom", "").strip(),
                         "prenom": rep.get("prenom", "").strip(),
-                        "qualite": rep.get("qualite", "Dirigeant").strip()
+                        "qualite": rep.get("qualite", "Dirigeant").strip(),
+                        "age": rep.get("age", ""),
+                        "date_de_naissance_formatee": rep.get("date_de_naissance_formatee", ""),
+                        "nationalite": rep.get("nationalite", "")
                     }
+
+                # Année d'ouverture
+                date_crea = item.get("date_creation", "")
+                annee_ouverture = date_crea.split("-")[0] if date_crea else None
+
+                # Forme juridique abrégée ou complète
+                forme_juridique = item.get("forme_juridique", "")
+                if "actions simplifiée" in forme_juridique.lower():
+                    forme_juridique = "SAS"
+                elif "responsabilité limitée" in forme_juridique.lower():
+                    forme_juridique = "SARL"
+                elif "unipersonnelle" in forme_juridique.lower():
+                    forme_juridique = "SASU" if "actions" in forme_juridique.lower() else "EURL"
 
                 siege = item.get("siege", {})
                 results.append({
                     "siren": item.get("siren"),
                     "siret": item.get("siret"),
                     "denomination": item.get("nom_entreprise") or item.get("denomination", ""),
+                    "raison_sociale": item.get("denomination") or item.get("nom_entreprise", ""),
+                    "forme_juridique": forme_juridique,
                     "code_naf": item.get("code_naf", ""),
                     "libelle_code_naf": item.get("libelle_code_naf", ""),
                     "chiffre_affaires": item.get("chiffre_affaires"),
-                    "tranche_effectif": item.get("tranche_effectif"),
-                    "date_creation": item.get("date_creation"),
+                    "annee_ca": item.get("annee_chiffre_affaires"),
+                    "tranche_effectif": item.get("tranche_effectif") or "Non précisé",
+                    "date_creation": date_crea,
+                    "annee_ouverture": annee_ouverture,
                     "adresse": siege.get("adresse_ligne_1", ""),
                     "code_postal": siege.get("code_postal", ""),
                     "ville": siege.get("ville", ""),

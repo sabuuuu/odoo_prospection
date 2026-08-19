@@ -69,34 +69,50 @@ class ContactEnricher:
         # Fallback de secours
         return ""
 
-    def enrich_contact(self, company_name: str, city: str, dirigeant: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    def enrich_contact(self, company_name: str, city: str, dirigeant: Optional[Dict[str, str]] = None, tranche_effectif: str = "", annee_ouverture: str = "") -> Dict[str, Any]:
         """Trouve le téléphone, email, site web/social, et concept du restaurant."""
         dirigeant_nom = f"{dirigeant.get('prenom', '')} {dirigeant.get('nom', '')}".strip() if dirigeant else ""
         dirigeant_role = dirigeant.get('qualite', 'Dirigeant') if dirigeant else ""
-
+        dirigeant_age_info = f", âgé de {dirigeant.get('age')} ans" if dirigeant and dirigeant.get('age') else ""
+        
         # Nettoyage du nom commercial
         clean_name = re.sub(r'\b(SAS|SARL|EURL|SA|SCI|SOCIETE|MONSIEUR|MADAME)\b', '', company_name, flags=re.IGNORECASE).strip()
         search_query = f"restaurant {clean_name} {city}"
         
         search_results = self._search_web(search_query)
 
-        prompt = f"""Tu es un assistant expert en prospection commerciale pour les restaurants.
+        prompt = f"""Tu es un enquêteur et analyste commercial expert dans la restauration B2B.
 
-Informations officielles :
+Ton objectif est de rédiger une note ultra-qualitative sur le parcours humain, entrepreneurial et le contexte de l'établissement.
+
+Informations officielles de départ (données légales à intégrer absolument dans ta synthèse) :
 - Nom commercial : {clean_name} ({company_name})
 - Ville : {city}
-- Dirigeant légal : {dirigeant_nom} ({dirigeant_role})
+- Dirigeant légal : {dirigeant_nom} ({dirigeant_role}){dirigeant_age_info}
+- Effectif : {tranche_effectif}
+- Année de création : {annee_ouverture}
 
-Résultats Google en direct :
+Voici ce que Google (articles, annuaires, réseaux sociaux) a trouvé sur le dirigeant et le restaurant :
 \"\"\"
 {search_results if search_results else "Aucun extrait web trouvé."}
 \"\"\"
 
 CONSIGNES D'EXTRACTION :
 1. "phone" : Extrais le numéro de téléphone direct du restaurant (format français 03..., 06..., 07..., 09... ou international).
-2. "website" : Donne en priorité le site web officiel du restaurant, ou le lien de sa page Facebook/Instagram/TripAdvisor trouvée.
+2. "website" : Donne en priorité le site web officiel du restaurant, ou le lien de sa page Facebook/Instagram/TripAdvisor.
 3. "email" : Extrais l'email de contact si présent dans les extraits.
-4. "summary" : Résume en 1 phrase claire le style de cuisine, spécialités et concept de l'établissement.
+4. "summary" : Rédige un profil très détaillé et dense (façon "Storytelling commercial"). Inclus toutes les données fournies (effectif, année d'ouverture, âge du dirigeant) et combine-les avec les extraits web pour créer une note riche et fluide !
+
+Voici deux exemples parfaits du style attendu (phrases nominales, informations denses, symboles comme |) :
+Exemple 1 : "{dirigeant_nom if dirigeant_nom else 'Le gérant'}, président du restaurant {clean_name} depuis {annee_ouverture if annee_ouverture else 'sa création'}, exploite son restaurant à {city}. Il dirige cet établissement avec {tranche_effectif if tranche_effectif else 'une équipe réduite'}."
+Exemple 2 : "Président (né à Woippy, 57) du restaurant enseigne MAISON BACI, place Saint-Louis (emplacement premium). 10-19 salariés. Continuité économique reprise par PORKYNETTE en 2025 (à vérifier : possible restructuration récente). Bon potentiel. | 🌐 Origines familiales des Pouilles (parents ouvriers sidérurgie lorraine). Cuisine italienne authentique, gestion familiale avec épouse Roselyne et fille Adeline. Gérant également du Café Rubis contigu."
+
+Inclus tout ce que tu trouves sur : 
+- Le parcours du dirigeant (origines, famille, âge).
+- L'historique (anciennes affaires, dates clés, effectifs).
+- L'emplacement et son potentiel (ex: emplacement premium).
+- Le concept, la cuisine et les spécialités de l'établissement.
+Sois exhaustif et ultra-qualitatif, c'est pour un briefing avant rendez-vous clé !
 
 RÉPONDS STRICTEMENT AU FORMAT JSON avec ces clés :
 {{
@@ -106,14 +122,14 @@ RÉPONDS STRICTEMENT AU FORMAT JSON avec ces clés :
   "phone": "numéro de téléphone ou null",
   "linkedin_url": null,
   "website": "url web ou null",
-  "summary": "Résumé du concept et spécialités"
+  "summary": "Note analytique détaillée du parcours, famille, affaires et concept"
 }}"""
 
         try:
             response = self.claude.messages.create(
                 model=self.model,
-                max_tokens=400,
-                temperature=0.1,
+                max_tokens=500,
+                temperature=0.2,
                 messages=[{"role": "user", "content": prompt}]
             )
             raw_text = response.content[0].text.strip()
