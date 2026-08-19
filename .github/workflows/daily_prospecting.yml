@@ -1,0 +1,63 @@
+name: Daily Prospecting Pipeline
+
+on:
+  schedule:
+    # Exécution tous les soirs à 23:00 (heure de Paris en été = 21:00 UTC, en hiver = 22:00 UTC)
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Mode simulation (ne pas créer de leads dans Odoo)'
+        required: false
+        type: boolean
+        default: false
+      limit:
+        description: 'Nombre de prospects à traiter'
+        required: false
+        type: number
+        default: 10
+
+jobs:
+  prospecting-job:
+    name: Run Prospecting Automation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Execute Prospecting Pipeline
+        env:
+          ODOO_URL: ${{ secrets.ODOO_URL }}
+          ODOO_DB: ${{ secrets.ODOO_DB }}
+          ODOO_USER: ${{ secrets.ODOO_USER }}
+          ODOO_API_KEY: ${{ secrets.ODOO_API_KEY }}
+          ODOO_TARGET_STAGE: ${{ vars.ODOO_TARGET_STAGE || 'Liste Restaurant' }}
+          ODOO_DEDUP_STAGES: ${{ vars.ODOO_DEDUP_STAGES || 'Liste Restaurant,À contacter' }}
+          PAPPERS_API_KEY: ${{ secrets.PAPPERS_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+          TARGET_NAF_CODES: ${{ vars.TARGET_NAF_CODES || '5610A,5610B,5610C' }}
+          TARGET_DEPARTMENTS: ${{ vars.TARGET_DEPARTMENTS || '57' }}
+          MIN_TURNOVER: ${{ vars.MIN_TURNOVER || '0' }}
+          DAILY_PROSPECT_LIMIT: ${{ github.event.inputs.limit || vars.DAILY_PROSPECT_LIMIT || '10' }}
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ -n "${{ github.event.inputs.limit }}" ]; then
+            ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"
+          fi
+          python main.py $ARGS
