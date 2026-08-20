@@ -1,21 +1,39 @@
 import argparse
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
 from config import Config
 from odoo_client import OdooClient
 from pappers_client import PappersClient
 from enricher import ContactEnricher
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+def setup_logging():
+    """Configure un système de logging propre avec console et fichier rotatif."""
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+
+    file_handler = RotatingFileHandler(
+        "prospection.log",
+        maxBytes=5 * 1024 * 1024, # 5 Mo
+        backupCount=3,
+        encoding="utf-8"
+    )
+    file_handler.setFormatter(formatter)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.handlers = []
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
+
+setup_logging()
 logger = logging.getLogger("ProspectionPipeline")
 
 def run_pipeline(dry_run: bool = False, limit_override: int = None):
     logger.info("=" * 60)
-    logger.info("🚀 Démarrage du pipeline de prospection automatisé")
+    logger.info("🚀 Démarrage du pipeline de prospection automatisé (Senior Edition)")
     if dry_run:
         logger.info("⚠️  MODE SIMULATION (DRY RUN) ACTIVÉ : Aucune écriture dans Odoo.")
     logger.info("=" * 60)
@@ -77,121 +95,57 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None):
                 if total_added >= limit:
                     break
 
-                siren = company["siren"]
-                siret = company.get("siret")
-                name = company["denomination"]
-                city = company["ville"]
-                dirigeant = company["dirigeant"]
-
-                # 4. Anti-doublon Odoo
-                if odoo.lead_or_partner_exists(siren, name, stage_ids=dedup_stage_ids):
-                    logger.info(f"⏭️  [DOUBLON] '{name}' (SIREN: {siren}) est déjà dans Odoo. Ignoré.")
+                # 1. Anti-doublon Odoo
+                if odoo.lead_or_partner_exists(company.siren, company.denomination, stage_ids=dedup_stage_ids):
+                    logger.info(f"⏭️  [DOUBLON] '{company.denomination}' (SIREN: {company.siren}) est déjà dans Odoo. Ignoré.")
                     total_skipped += 1
                     continue
 
-                logger.info(f"✨ Nouveau prospect : '{name}' ({city}) - SIREN: {siren}")
+                logger.info(f"✨ Nouveau prospect : '{company.denomination}' ({company.ville}) - SIREN: {company.siren}")
 
-                # 5. Enrichissement Web + IA
-                logger.info(f"🧠 Recherche & qualification IA pour '{name}'...")
+                # 2. Enrichissement Web + IA
+                logger.info(f"🧠 Recherche & qualification IA pour '{company.denomination}'...")
                 contact_info = enricher.enrich_contact(
-                    company_name=name,
-                    city=city,
-                    siren=siren,
-                    dirigeant=dirigeant,
-                    tranche_effectif=company.get("tranche_effectif", ""),
-                    annee_ouverture=company.get("annee_ouverture", "")
+                    company_name=company.denomination,
+                    city=company.ville,
+                    siren=company.siren,
+                    dirigeant=company.dirigeant,
+                    tranche_effectif=company.tranche_effectif,
+                    annee_ouverture=company.annee_ouverture or ""
                 )
 
-                # Formatage du contact dirigeant
-                contact_name = contact_info.get("contact_name")
-                if not contact_name and dirigeant:
-                    contact_name = f"{dirigeant.get('prenom', '')} {dirigeant.get('nom', '')}".strip()
-                
-                full_contact = f"{name}, {contact_name}" if contact_name else name
-                contact_role = contact_info.get("job_title") or (dirigeant.get('qualite') if dirigeant else "Gérant")
-                
-                director_phone = contact_info.get("phone")
-                director_email = contact_info.get("email")
-                director_has_real_contact = bool(director_phone or director_email)
-
-                # 6. Valeurs des champs personnalisés Studio (pour CRM ET Contact)
-                restaurant_type = company.get("libelle_code_naf") or "Restauration"
-                adresse_complete = f"{company.get('adresse', '')} {company.get('code_postal', '')} {city}".strip()
-                
-                custom_values = {
-                    'siren': siren,
-                    'annee_ouverture': company.get("annee_ouverture"),
-                    'raison_sociale': company.get("raison_sociale") or name,
-                    'forme_juridique': company.get("forme_juridique"),
-                    'nombre_salaries': company.get("tranche_effectif"),
-                    'naf': f"{company.get('code_naf')} {restaurant_type}".strip(),
-                    'linkedin': contact_info.get("linkedin_url"),
-                    'chiffre_affaires': float(company.get("chiffre_affaires")) if company.get("chiffre_affaires") else None,
-                    'annee_ca': str(company.get("annee_ca")) if company.get("annee_ca") else None,
-                    'type_de_restaurant': restaurant_type,
-                    'adresse_du_siege_social': adresse_complete,
-                    'web': contact_info.get("website")
-                }
-
-                # ========== 7. CRÉATION DES CONTACTS (res.partner) ==========
+                # 3. Création des contacts (res.partner)
                 company_partner_id = None
                 director_partner_id = None
                 
                 if not dry_run:
-                    company_partner_id = odoo.create_company_contact({
-                        'name': name,
-                        'street': company.get("adresse"),
-                        'city': city,
-                        'zip': company.get("code_postal"),
-                        'phone': director_phone if not contact_name else False,
-                        'email': director_email if not contact_name else False,
-                        'website': contact_info.get("website"),
-                        'siret': siret,
-                        'comment': contact_info.get("summary", "")
-                    }, custom_values)
+                    company_partner_id = odoo.create_company_contact(company, contact_info)
                     
-                    if contact_name and director_has_real_contact and company_partner_id:
-                        director_partner_id = odoo.create_director_contact({
-                            'name': contact_name,
-                            'function': contact_role,
-                            'phone': director_phone,
-                            'email': director_email,
-                            'comment': f"Dirigeant de {name}"
-                        }, company_partner_id)
+                    if contact_info.contact_name and contact_info.has_real_contact and company_partner_id:
+                        director_partner_id = odoo.create_director_contact(
+                            contact_info,
+                            company_partner_id,
+                            company.denomination
+                        )
 
                 linked_partner_id = director_partner_id or company_partner_id
 
-                # ========== 8. CHAMPS STANDARDS LEAD ==========
-                lead_data = {
-                    'name': name,
-                    'partner_name': name,
-                    'contact_name': full_contact,
-                    'function': contact_role,
-                    'email_from': director_email or False,
-                    'phone': director_phone or False,
-                    'website': contact_info.get("website") or False,
-                    'street': company.get("adresse") or False,
-                    'city': city or False,
-                    'zip': company.get("code_postal") or False,
-                    'description': contact_info.get("summary", "")
-                }
-
-                # 9. Tags dynamiques
+                # 4. Tags dynamiques
                 tags_to_add = []
                 if tag_id_oxo:
                     tags_to_add.append((4, tag_id_oxo))
-                if director_has_real_contact and tag_id_dirigeant:
+                if contact_info.has_real_contact and tag_id_dirigeant:
                     tags_to_add.append((4, tag_id_dirigeant))
-                    logger.info(f"🏷️  Tag 'Dirigeant' activé pour '{name}' (Tél: {director_phone}, Email: {director_email})")
+                    logger.info(f"🏷️  Tag 'Dirigeant' activé pour '{company.denomination}' (Tél: {contact_info.phone}, Email: {contact_info.email})")
 
-                # 10. Insertion du Lead dans Odoo
+                # 5. Création du Lead CRM
                 if dry_run:
-                    logger.info(f"[SIMULATION] Lead : {lead_data['name']} | Contact lié: {linked_partner_id} | Tags: {tags_to_add}")
+                    logger.info(f"[SIMULATION] Lead : {company.denomination} | Contact lié: {linked_partner_id} | Tags: {tags_to_add}")
                     total_added += 1
                 else:
                     lead_id = odoo.create_lead(
-                        lead_data=lead_data,
-                        custom_values=custom_values,
+                        company=company,
+                        enriched=contact_info,
                         stage_id=target_stage_id,
                         tag_ids=tags_to_add if tags_to_add else None,
                         partner_id=linked_partner_id

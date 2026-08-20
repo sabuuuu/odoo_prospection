@@ -2,11 +2,12 @@ import xmlrpc.client
 import logging
 import re
 from typing import Dict, Any, Optional, List
+from models import CompanyProspect, EnrichedContact
 
 logger = logging.getLogger(__name__)
 
 class OdooClient:
-    """Client XML-RPC pour interagir avec Odoo CRM, gérer les champs personnalisés Studio, les étiquettes et les contacts."""
+    """Client XML-RPC robuste pour interagir avec Odoo CRM et res.partner."""
 
     def __init__(self, url: str, db: str, username: str, api_key: str):
         clean_url = url.strip()
@@ -24,21 +25,21 @@ class OdooClient:
         self._discover_fields()
 
     def _authenticate(self):
-        """Authentifie l'utilisateur via le endpoint XML-RPC d'Odoo."""
+        """Authentifie l'utilisateur via XML-RPC avec allow_none=True."""
         try:
-            common = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/common')
+            common = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/common', allow_none=True)
             self.uid = common.authenticate(self.db, self.username, self.api_key, {})
             if not self.uid:
                 raise PermissionError("Échec d'authentification Odoo. Vérifiez vos identifiants/clé API.")
-            self.models = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/object')
+            self.models = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/object', allow_none=True)
             logger.info(f"Connecté à Odoo avec succès (UID: {self.uid})")
         except Exception as e:
             logger.error(f"Erreur de connexion à Odoo : {e}")
             raise
 
     def _discover_fields(self):
-        """Découvre les champs et leurs types/options de sélection pour crm.lead et res.partner."""
-        target_keys = {
+        """Découvre dynamiquement les types et options de sélection pour crm.lead et res.partner."""
+        target_lead_keys = {
             'siren': 'x_studio_siren',
             'annee_ouverture': 'x_studio_annee_douverture',
             'raison_sociale': 'x_studio_raison_sociale',
@@ -52,7 +53,6 @@ class OdooClient:
             'adresse_du_siege_social': 'x_studio_adresse_du_siege_social',
         }
 
-        # 1. Inspecter crm.lead
         try:
             lead_fields = self.models.execute_kw(
                 self.db, self.uid, self.api_key,
@@ -60,7 +60,7 @@ class OdooClient:
                 [],
                 {'attributes': ['string', 'type', 'selection']}
             )
-            for key, field_name in target_keys.items():
+            for key, field_name in target_lead_keys.items():
                 if field_name in lead_fields:
                     f_info = lead_fields[field_name]
                     self.lead_field_map[key] = {
@@ -72,8 +72,7 @@ class OdooClient:
         except Exception as e:
             logger.warning(f"Erreur découverte crm.lead : {e}")
 
-        # 2. Inspecter res.partner
-        partner_target_keys = {
+        target_partner_keys = {
             'siren': 'x_studio_siren',
             'annee_ouverture': 'x_studio_annee_douverture',
             'raison_sociale': 'x_studio_raison_sociale',
@@ -93,7 +92,7 @@ class OdooClient:
                 [],
                 {'attributes': ['string', 'type', 'selection']}
             )
-            for key, field_name in partner_target_keys.items():
+            for key, field_name in target_partner_keys.items():
                 if field_name in partner_fields:
                     f_info = partner_fields[field_name]
                     self.partner_field_map[key] = {
@@ -106,20 +105,18 @@ class OdooClient:
             logger.warning(f"Erreur découverte res.partner : {e}")
 
     def _format_custom_value(self, val: Any, field_info: Dict[str, Any]) -> Any:
-        """Adapte proprement la valeur au type Odoo (selection, integer, float, char, boolean)."""
+        """Formate et valide la valeur selon le type Odoo attendu (garanti sans None)."""
         if val is None or val is False or val == "":
             return False
         
         f_type = field_info.get('type')
         try:
             if f_type == 'selection':
-                # Valider contre les options autorisées du menu déroulant
                 selection_opts = field_info.get('selection', [])
                 val_str = str(val).strip().lower()
                 for opt_key, opt_label in selection_opts:
                     if str(opt_key).lower() == val_str or str(opt_label).lower() == val_str:
                         return opt_key
-                # Si aucune correspondance exacte, ne pas envoyer de valeur invalide
                 return False
             elif f_type in ('integer', 'int'):
                 s = re.sub(r'[^\d]', '', str(val))
@@ -135,7 +132,7 @@ class OdooClient:
             return False
 
     def get_or_create_tag(self, tag_name: str = "Prospection IA OXO") -> Optional[int]:
-        """Récupère ou crée une étiquette (crm.tag) dans Odoo."""
+        """Récupère ou crée une étiquette CRM."""
         try:
             tag_ids = self.models.execute_kw(
                 self.db, self.uid, self.api_key,
@@ -154,11 +151,11 @@ class OdooClient:
             logger.info(f"🏷️ Nouvelle étiquette créée : '{tag_name}' (ID: {new_tag_id})")
             return new_tag_id
         except Exception as e:
-            logger.warning(f"Erreur lors de la gestion de l'étiquette '{tag_name}' : {e}")
+            logger.warning(f"Erreur gestion étiquette '{tag_name}' : {e}")
             return None
 
     def get_stage_id(self, stage_name: str) -> Optional[int]:
-        """Récupère l'ID d'une étape CRM (crm.stage) par son nom."""
+        """Récupère l'ID d'une étape CRM."""
         try:
             stage_ids = self.models.execute_kw(
                 self.db, self.uid, self.api_key,
@@ -166,32 +163,23 @@ class OdooClient:
                 [[['name', 'ilike', stage_name]]],
                 {'limit': 1}
             )
-            if stage_ids:
-                return stage_ids[0]
-            logger.warning(f"Étape Odoo '{stage_name}' non trouvée.")
-            return None
+            return stage_ids[0] if stage_ids else None
         except Exception as e:
-            logger.error(f"Erreur lors de la recherche de l'étape '{stage_name}' : {e}")
+            logger.error(f"Erreur recherche étape '{stage_name}' : {e}")
             return None
 
     def get_stage_ids(self, stage_names: list) -> list:
-        """Récupère les IDs pour une liste de noms d'étapes."""
-        ids = []
-        for name in stage_names:
-            sid = self.get_stage_id(name)
-            if sid:
-                ids.append(sid)
-        return ids
+        """Récupère les IDs pour une liste d'étapes."""
+        return [sid for name in stage_names if (sid := self.get_stage_id(name))]
 
     def lead_or_partner_exists(self, siren: str, company_name: str, stage_ids: Optional[list] = None) -> bool:
-        """Vérifie si une entreprise existe déjà dans Odoo."""
+        """Vérifie l'anti-doublon par SIREN et nom."""
         try:
             domain_lead = [
                 '|',
                 ['x_studio_siren', 'ilike', siren],
                 ['name', 'ilike', company_name]
             ]
-
             if stage_ids:
                 domain_lead.append(['stage_id', 'in', stage_ids])
 
@@ -203,36 +191,48 @@ class OdooClient:
             )
             return len(lead_ids) > 0
         except Exception as e:
-            logger.warning(f"Erreur vérification doublon pour {company_name} ({siren}) : {e}")
+            logger.warning(f"Erreur vérification doublon {company_name} : {e}")
             return False
 
-    # ========== MODULE CONTACTS (res.partner) ==========
-
-    def create_company_contact(self, company_data: Dict[str, Any], custom_values: Dict[str, Any]) -> Optional[int]:
-        """Crée un contact de type Société (restaurant) dans res.partner avec tous ses champs Studio."""
+    def create_company_contact(self, company: CompanyProspect, enriched: EnrichedContact) -> Optional[int]:
+        """Crée un contact Société dans res.partner (garanti sans None pour XML-RPC)."""
         try:
             existing = self.models.execute_kw(
                 self.db, self.uid, self.api_key,
                 'res.partner', 'search',
-                [[['name', 'ilike', company_data.get('name', '')], ['is_company', '=', True]]],
+                [[['name', 'ilike', company.denomination], ['is_company', '=', True]]],
                 {'limit': 1}
             )
             if existing:
-                logger.info(f"💼 Contact entreprise existant trouvé (ID: {existing[0]}) pour '{company_data.get('name')}'")
+                logger.info(f"💼 Contact entreprise existant trouvé (ID: {existing[0]}) pour '{company.denomination}'")
                 return existing[0]
 
             payload = {
-                'name': company_data.get('name'),
+                'name': company.denomination,
                 'is_company': True,
-                'street': company_data.get('street') or False,
-                'city': company_data.get('city') or False,
-                'zip': company_data.get('zip') or False,
-                'country_id': 75, # France
-                'phone': company_data.get('phone') or False,
-                'email': company_data.get('email') or False,
-                'website': company_data.get('website') or False,
-                'company_registry': company_data.get('siret') or False,
-                'comment': company_data.get('comment') or False,
+                'street': company.adresse or False,
+                'city': company.ville or False,
+                'zip': company.code_postal or False,
+                'country_id': 75,
+                'phone': enriched.phone or False,
+                'email': enriched.email or False,
+                'website': enriched.website or False,
+                'company_registry': company.siret or False,
+                'comment': enriched.summary or False,
+            }
+
+            custom_values = {
+                'siren': company.siren,
+                'annee_ouverture': company.annee_ouverture or False,
+                'raison_sociale': company.raison_sociale or False,
+                'forme_juridique': company.forme_juridique or False,
+                'nombre_salaries': company.tranche_effectif or False,
+                'naf': f"{company.code_naf} {company.libelle_code_naf}".strip() or False,
+                'linkedin': enriched.linkedin_url or False,
+                'chiffre_affaires': company.chiffre_affaires or False,
+                'annee_ca': company.annee_ca or False,
+                'web': enriched.website or False,
+                'est_une_entreprise': True
             }
 
             for key, val in custom_values.items():
@@ -242,56 +242,91 @@ class OdooClient:
                     if formatted is not False:
                         payload[f_info['name']] = formatted
 
-            if 'est_une_entreprise' in self.partner_field_map:
-                payload[self.partner_field_map['est_une_entreprise']['name']] = True
+            # Remplacement de tout None restant par False (règle stricte XML-RPC)
+            sanitized_payload = {k: (False if v is None else v) for k, v in payload.items()}
 
             partner_id = self.models.execute_kw(
                 self.db, self.uid, self.api_key,
                 'res.partner', 'create',
-                [payload]
+                [sanitized_payload]
             )
-            logger.info(f"💼 Contact entreprise créé (ID: {partner_id}) avec champs Studio pour '{company_data.get('name')}'")
+            logger.info(f"💼 Contact entreprise créé (ID: {partner_id}) pour '{company.denomination}'")
             return partner_id
         except Exception as e:
-            logger.error(f"Erreur création contact entreprise '{company_data.get('name')}' : {e}")
+            logger.error(f"Erreur création contact entreprise '{company.denomination}' : {e}")
             return None
 
-    def create_director_contact(self, director_data: Dict[str, Any], company_partner_id: int) -> Optional[int]:
-        """Crée un contact de type Individu (dirigeant) rattaché à l'entreprise dans res.partner."""
+    def create_director_contact(self, enriched: EnrichedContact, company_partner_id: int, company_name: str) -> Optional[int]:
+        """Crée un contact Individu rattaché à l'entreprise."""
         try:
             payload = {
-                'name': director_data.get('name'),
+                'name': enriched.contact_name,
                 'is_company': False,
                 'parent_id': company_partner_id,
-                'function': director_data.get('function') or 'Gérant',
-                'phone': director_data.get('phone') or False,
-                'email': director_data.get('email') or False,
-                'comment': director_data.get('comment') or False,
+                'function': enriched.job_title or 'Gérant',
+                'phone': enriched.phone or False,
+                'email': enriched.email or False,
+                'comment': f"Dirigeant de {company_name}",
             }
+            sanitized_payload = {k: (False if v is None else v) for k, v in payload.items()}
 
             partner_id = self.models.execute_kw(
                 self.db, self.uid, self.api_key,
                 'res.partner', 'create',
-                [payload]
+                [sanitized_payload]
             )
-            logger.info(f"👤 Contact dirigeant créé (ID: {partner_id}) : '{director_data.get('name')}' rattaché à entreprise ID {company_partner_id}")
+            logger.info(f"👤 Contact dirigeant créé (ID: {partner_id}) : '{enriched.contact_name}'")
             return partner_id
         except Exception as e:
-            logger.error(f"Erreur création contact dirigeant '{director_data.get('name')}' : {e}")
+            logger.error(f"Erreur création contact dirigeant '{enriched.contact_name}' : {e}")
             return None
 
-    # ========== CRÉATION DE LEAD ==========
-
-    def create_lead(self, lead_data: Dict[str, Any], custom_values: Dict[str, Any], stage_id: Optional[int] = None, tag_ids: Optional[list] = None, partner_id: Optional[int] = None) -> Optional[int]:
-        """Crée une nouvelle piste en renseignant les champs standards et personnalisés Studio Lead."""
+    def create_lead(
+        self,
+        company: CompanyProspect,
+        enriched: EnrichedContact,
+        stage_id: Optional[int] = None,
+        tag_ids: Optional[list] = None,
+        partner_id: Optional[int] = None
+    ) -> Optional[int]:
+        """Crée une piste CRM complète et assainie pour Odoo."""
         try:
-            payload = dict(lead_data)
+            full_contact = f"{company.denomination}, {enriched.contact_name}" if enriched.contact_name else company.denomination
+
+            payload = {
+                'name': company.denomination,
+                'partner_name': company.denomination,
+                'contact_name': full_contact,
+                'function': enriched.job_title or "Direction",
+                'email_from': enriched.email or False,
+                'phone': enriched.phone or False,
+                'website': enriched.website or False,
+                'street': company.adresse or False,
+                'city': company.ville or False,
+                'zip': company.code_postal or False,
+                'description': enriched.summary or ""
+            }
+
             if stage_id:
                 payload['stage_id'] = stage_id
             if tag_ids:
                 payload['tag_ids'] = tag_ids
             if partner_id:
                 payload['partner_id'] = partner_id
+
+            custom_values = {
+                'siren': company.siren,
+                'annee_ouverture': company.annee_ouverture or False,
+                'raison_sociale': company.raison_sociale or False,
+                'forme_juridique': company.forme_juridique or False,
+                'nombre_salaries': company.tranche_effectif or False,
+                'naf': f"{company.code_naf} {company.libelle_code_naf}".strip() or False,
+                'linkedin': enriched.linkedin_url or False,
+                'chiffre_affaires': company.chiffre_affaires or False,
+                'annee_ca': company.annee_ca or False,
+                'type_de_restaurant': company.libelle_code_naf or False,
+                'adresse_du_siege_social': company.full_address or False
+            }
 
             for key, val in custom_values.items():
                 if val is not None and key in self.lead_field_map:
@@ -300,13 +335,15 @@ class OdooClient:
                     if formatted is not False:
                         payload[f_info['name']] = formatted
 
+            sanitized_payload = {k: (False if v is None else v) for k, v in payload.items()}
+
             lead_id = self.models.execute_kw(
                 self.db, self.uid, self.api_key,
                 'crm.lead', 'create',
-                [payload]
+                [sanitized_payload]
             )
-            logger.info(f"✅ Lead créé dans Odoo (ID: {lead_id}) avec champs Studio Lead et Contact lié pour '{payload.get('name')}'")
+            logger.info(f"✅ Lead créé dans Odoo (ID: {lead_id}) pour '{payload.get('name')}'")
             return lead_id
         except Exception as e:
-            logger.error(f"Erreur lors de la création du Lead Odoo : {e}")
+            logger.error(f"Erreur création Lead Odoo : {e}")
             return None
