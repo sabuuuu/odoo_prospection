@@ -15,9 +15,9 @@ logger = logging.getLogger("ProspectionPipeline")
 
 def run_pipeline(dry_run: bool = False, limit_override: int = None):
     logger.info("=" * 60)
-    logger.info("\U0001f680 D\u00e9marrage du pipeline de prospection automatis\u00e9")
+    logger.info("🚀 Démarrage du pipeline de prospection automatisé")
     if dry_run:
-        logger.info("\u26a0\ufe0f  MODE SIMULATION (DRY RUN) ACTIV\u00c9 : Aucune \u00e9criture dans Odoo.")
+        logger.info("⚠️  MODE SIMULATION (DRY RUN) ACTIVÉ : Aucune écriture dans Odoo.")
     logger.info("=" * 60)
 
     try:
@@ -40,7 +40,6 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None):
         model=Config.CLAUDE_MODEL
     )
 
-    # R\u00e9cup\u00e9ration des IDs d'\u00e9tapes et des \u00c9tiquettes
     target_stage_id = odoo.get_stage_id(Config.ODOO_TARGET_STAGE)
     dedup_stage_ids = odoo.get_stage_ids(Config.ODOO_DEDUP_STAGES)
     
@@ -60,7 +59,7 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None):
 
         while total_added < limit and page <= max_pages:
             dep_display = f"Dept {dep}" if dep else "Toute France"
-            logger.info(f"\n\U0001f50e Recherche Pappers (Page {page} | NAF: {naf_query} | Zone: {dep_display} | Objectif: {limit - total_added} restants)...")
+            logger.info(f"\n🔎 Recherche Pappers (Page {page} | NAF: {naf_query} | Zone: {dep_display} | Objectif: {limit - total_added} restants)...")
             
             companies = pappers.search_companies(
                 code_naf=naf_query,
@@ -71,7 +70,7 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None):
             )
 
             if not companies:
-                logger.info("Fin des r\u00e9sultats disponibles sur Pappers.")
+                logger.info("Fin des résultats disponibles sur Pappers.")
                 break
 
             for company in companies:
@@ -79,20 +78,21 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None):
                     break
 
                 siren = company["siren"]
+                siret = company.get("siret")
                 name = company["denomination"]
                 city = company["ville"]
                 dirigeant = company["dirigeant"]
 
                 # 4. Anti-doublon Odoo
                 if odoo.lead_or_partner_exists(siren, name, stage_ids=dedup_stage_ids):
-                    logger.info(f"\u23ed\ufe0f  [DOUBLON] '{name}' (SIREN: {siren}) est d\u00e9j\u00e0 dans Odoo. Ignor\u00e9.")
+                    logger.info(f"⏭️  [DOUBLON] '{name}' (SIREN: {siren}) est déjà dans Odoo. Ignoré.")
                     total_skipped += 1
                     continue
 
-                logger.info(f"\u2728 Nouveau prospect : '{name}' ({city}) - SIREN: {siren}")
+                logger.info(f"✨ Nouveau prospect : '{name}' ({city}) - SIREN: {siren}")
 
-                # 5. Enrichissement Web + IA (avec SIREN pour fallback data.gouv.fr)
-                logger.info(f"\U0001f9e0 Recherche & qualification IA pour '{name}'...")
+                # 5. Enrichissement Web + IA
+                logger.info(f"🧠 Recherche & qualification IA pour '{name}'...")
                 contact_info = enricher.enrich_contact(
                     company_name=name,
                     city=city,
@@ -108,18 +108,36 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None):
                     contact_name = f"{dirigeant.get('prenom', '')} {dirigeant.get('nom', '')}".strip()
                 
                 full_contact = f"{name}, {contact_name}" if contact_name else name
-                contact_role = contact_info.get("job_title") or (dirigeant.get('qualite') if dirigeant else "G\u00e9rant")
+                contact_role = contact_info.get("job_title") or (dirigeant.get('qualite') if dirigeant else "Gérant")
                 
                 director_phone = contact_info.get("phone")
                 director_email = contact_info.get("email")
                 director_has_real_contact = bool(director_phone or director_email)
 
-                # ========== 6. CR\u00c9ATION DES CONTACTS (res.partner) ==========
+                # 6. Valeurs des champs personnalisés Studio (pour CRM ET Contact)
+                restaurant_type = company.get("libelle_code_naf") or "Restauration"
+                adresse_complete = f"{company.get('adresse', '')} {company.get('code_postal', '')} {city}".strip()
+                
+                custom_values = {
+                    'siren': siren,
+                    'annee_ouverture': company.get("annee_ouverture"),
+                    'raison_sociale': company.get("raison_sociale") or name,
+                    'forme_juridique': company.get("forme_juridique"),
+                    'nombre_salaries': company.get("tranche_effectif"),
+                    'naf': f"{company.get('code_naf')} {restaurant_type}".strip(),
+                    'linkedin': contact_info.get("linkedin_url"),
+                    'chiffre_affaires': float(company.get("chiffre_affaires")) if company.get("chiffre_affaires") else None,
+                    'annee_ca': str(company.get("annee_ca")) if company.get("annee_ca") else None,
+                    'type_de_restaurant': restaurant_type,
+                    'adresse_du_siege_social': adresse_complete,
+                    'web': contact_info.get("website")
+                }
+
+                # ========== 7. CRÉATION DES CONTACTS (res.partner) ==========
                 company_partner_id = None
                 director_partner_id = None
                 
                 if not dry_run:
-                    # 6a. Toujours cr\u00e9er le contact entreprise (restaurant)
                     company_partner_id = odoo.create_company_contact({
                         'name': name,
                         'street': company.get("adresse"),
@@ -128,20 +146,22 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None):
                         'phone': director_phone if not contact_name else False,
                         'email': director_email if not contact_name else False,
                         'website': contact_info.get("website"),
-                        'comment': f"SIREN: {siren} | NAF: {company.get('code_naf')} {company.get('libelle_code_naf', '')} | Effectif: {company.get('tranche_effectif', 'N/A')}"
-                    })
+                        'siret': siret,
+                        'comment': contact_info.get("summary", "")
+                    }, custom_values)
                     
-                    # 6b. Si on a trouv\u00e9 un dirigeant avec de vraies coordonn\u00e9es, on cr\u00e9e aussi son contact individuel
                     if contact_name and director_has_real_contact and company_partner_id:
                         director_partner_id = odoo.create_director_contact({
                             'name': contact_name,
                             'function': contact_role,
                             'phone': director_phone,
                             'email': director_email,
-                            'comment': contact_info.get("summary", "")
+                            'comment': f"Dirigeant de {name}"
                         }, company_partner_id)
 
-                # ========== 7. CHAMPS STANDARDS LEAD ==========
+                linked_partner_id = director_partner_id or company_partner_id
+
+                # ========== 8. CHAMPS STANDARDS LEAD ==========
                 lead_data = {
                     'name': name,
                     'partner_name': name,
@@ -156,31 +176,17 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None):
                     'description': contact_info.get("summary", "")
                 }
 
-                # 8. Valeurs des champs personnalis\u00e9s
-                custom_values = {
-                    'siren': siren,
-                    'annee_ouverture': company.get("annee_ouverture"),
-                    'raison_sociale': company.get("raison_sociale"),
-                    'forme_juridique': company.get("forme_juridique"),
-                    'nombre_salaries': company.get("tranche_effectif"),
-                    'naf': f"{company.get('code_naf')} {company.get('libelle_code_naf', '')}".strip(),
-                    'linkedin': contact_info.get("linkedin_url"),
-                    'chiffre_affaires': float(company.get("chiffre_affaires")) if company.get("chiffre_affaires") else None,
-                    'annee_ca': str(company.get("annee_ca")) if company.get("annee_ca") else None
-                }
-
                 # 9. Tags dynamiques
                 tags_to_add = []
                 if tag_id_oxo:
                     tags_to_add.append((4, tag_id_oxo))
-                # Tag "Dirigeant" UNIQUEMENT si on a des coordonn\u00e9es r\u00e9elles (t\u00e9l\u00e9phone ou email)
                 if director_has_real_contact and tag_id_dirigeant:
                     tags_to_add.append((4, tag_id_dirigeant))
-                    logger.info(f"\U0001f3f7\ufe0f  Tag 'Dirigeant' activ\u00e9 pour '{name}' (T\u00e9l: {director_phone}, Email: {director_email})")
+                    logger.info(f"🏷️  Tag 'Dirigeant' activé pour '{name}' (Tél: {director_phone}, Email: {director_email})")
 
                 # 10. Insertion du Lead dans Odoo
                 if dry_run:
-                    logger.info(f"[SIMULATION] Lead : {lead_data['name']} | Contact entreprise + dirigeant | Tags: {tags_to_add}")
+                    logger.info(f"[SIMULATION] Lead : {lead_data['name']} | Contact lié: {linked_partner_id} | Tags: {tags_to_add}")
                     total_added += 1
                 else:
                     lead_id = odoo.create_lead(
@@ -188,7 +194,7 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None):
                         custom_values=custom_values,
                         stage_id=target_stage_id,
                         tag_ids=tags_to_add if tags_to_add else None,
-                        partner_id=company_partner_id
+                        partner_id=linked_partner_id
                     )
                     if lead_id:
                         total_added += 1
@@ -196,13 +202,13 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None):
             page += 1
 
     logger.info("=" * 60)
-    logger.info("\U0001f4ca BILAN DE L'EX\u00c9CUTION DU PIPELINE")
-    logger.info(f"   \u2022 Nouveaux prospects ajout\u00e9s : {total_added}")
-    logger.info(f"   \u2022 Doublons \u00e9vit\u00e9s : {total_skipped}")
+    logger.info("📊 BILAN DE L'EXÉCUTION DU PIPELINE")
+    logger.info(f"   • Nouveaux prospects ajoutés : {total_added}")
+    logger.info(f"   • Doublons évités : {total_skipped}")
     logger.info("=" * 60)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Pipeline de Prospection Automatis\u00e9")
+    parser = argparse.ArgumentParser(description="Pipeline de Prospection Automatisé")
     parser.add_argument("--dry-run", action="store_true", help="Mode simulation")
     parser.add_argument("--limit", type=int, help="Nombre maximum de prospects")
     args = parser.parse_args()

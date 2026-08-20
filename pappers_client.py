@@ -1,15 +1,38 @@
 import requests
 import logging
+import re
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# Liste noire des chaînes, franchises et réseaux nationaux
+NATIONAL_CHAINS_EXCLUDE = [
+    "mcdonald", "mc donald", "burger king", "kfc", "quick", "subway", "o'tacos", "otacos",
+    "buffalo grill", "courtepaille", "hippopotamus", "bistrot regent", "bistrot régent",
+    "flunch", "autogrill", "crescendo", "del arte", "pizza del arte", "domino's", "dominos",
+    "pizza hut", "class croute", "class'croute", "brioche doree", "brioche dorée", "paul",
+    "starbucks", "columbus cafe", "columbus café", "la mie caline", "la mie câline", "point chaud", 
+    "marie blachere", "marie blachère", "pitaya", "vapiano", "leon de bruxelles", "léon de bruxelles", 
+    "pataterie", "la pataterie", "nabab kebab", "chamas tacos", "g la dalle", "point b", "five guys",
+    "popeyes", "krispy kreme", "bagel stein", "bagelstein", "cojean", "exki", "sushi shop", "planet sushi",
+    "crous", "elior", "sodexo", "compass group", "serenest", "api restauration", "dupont restauration",
+    "ansemble", "score services", "eurest", "medirest", "newrest"
+]
+
 class PappersClient:
-    """Client API pour récupérer les entreprises et leurs dirigeants depuis Pappers."""
+    """Client API pour récupérer les entreprises et filtrer les franchises/chaînes nationales."""
 
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = "https://api.pappers.fr/v2"
+
+    def _is_national_chain(self, company_name: str, enseigne: str = "") -> bool:
+        """Détecte si le restaurant appartient à une chaîne ou franchise nationale connue."""
+        full_text = f"{company_name} {enseigne}".lower()
+        for chain in NATIONAL_CHAINS_EXCLUDE:
+            if chain in full_text:
+                return True
+        return False
 
     def search_companies(
         self,
@@ -19,7 +42,7 @@ class PappersClient:
         limit: int = 10,
         page: int = 1
     ) -> List[Dict[str, Any]]:
-        """Recherche des entreprises françaises selon des critères ciblés."""
+        """Recherche des restaurants indépendants et groupes locaux, en excluant les franchises nationales."""
         params = {
             "api_token": self.api_key,
             "par_page": min(limit, 100),
@@ -43,6 +66,37 @@ class PappersClient:
 
             results = []
             for item in data.get("resultats", []):
+                name = item.get("nom_entreprise") or item.get("denomination", "")
+                siege = item.get("siege", {})
+                enseigne = siege.get("enseigne", "")
+                
+                # 1. FILTRE : Exclusion des chaînes & franchises nationales
+                if self._is_national_chain(name, enseigne):
+                    logger.info(f"🚫 [CHAÎNE/FRANCHISE EXCLUE] '{name}' ({enseigne}) ignoré.")
+                    continue
+
+                # 2. FILTRE : Siège distant pour grand groupe (ex: siège à Paris/Marseille)
+                siege_cp = str(siege.get("code_postal", ""))
+                matching_etabs = item.get("matching_etablissements") or item.get("etablissements", [])
+                
+                # Si le département est spécifié (ex: 57) et que le siège est hors région
+                if departement and not siege_cp.startswith(str(departement)):
+                    # Si c'est un grand groupe (> 5 établissements hors région), on l'exclut
+                    if len(matching_etabs) > 5 or item.get("effectif_min", 0) > 50:
+                        logger.info(f"🚫 [GROUPE NATIONAL EXCLU] '{name}' (Siège hors 57: {siege.get('ville')}) ignoré.")
+                        continue
+                    
+                    # Sinon, on récupère l'adresse de l'établissement local en Moselle
+                    adresse_locale = None
+                    for etab in matching_etabs:
+                        if str(etab.get("code_postal", "")).startswith(str(departement)):
+                            adresse_locale = etab
+                            break
+                    if not adresse_locale:
+                        continue
+                else:
+                    adresse_locale = siege
+
                 # Dirigeant principal
                 representants = item.get("representants", [])
                 dirigeant = None
@@ -57,11 +111,9 @@ class PappersClient:
                         "nationalite": rep.get("nationalite", "")
                     }
 
-                # Année d'ouverture
                 date_crea = item.get("date_creation", "")
                 annee_ouverture = date_crea.split("-")[0] if date_crea else None
 
-                # Forme juridique abrégée ou complète
                 forme_juridique = item.get("forme_juridique", "")
                 if "actions simplifiée" in forme_juridique.lower():
                     forme_juridique = "SAS"
@@ -70,12 +122,11 @@ class PappersClient:
                 elif "unipersonnelle" in forme_juridique.lower():
                     forme_juridique = "SASU" if "actions" in forme_juridique.lower() else "EURL"
 
-                siege = item.get("siege", {})
                 results.append({
                     "siren": item.get("siren"),
-                    "siret": item.get("siret"),
-                    "denomination": item.get("nom_entreprise") or item.get("denomination", ""),
-                    "raison_sociale": item.get("denomination") or item.get("nom_entreprise", ""),
+                    "siret": adresse_locale.get("siret") or item.get("siret"),
+                    "denomination": name,
+                    "raison_sociale": item.get("denomination") or name,
                     "forme_juridique": forme_juridique,
                     "code_naf": item.get("code_naf", ""),
                     "libelle_code_naf": item.get("libelle_code_naf", ""),
@@ -84,13 +135,13 @@ class PappersClient:
                     "tranche_effectif": item.get("tranche_effectif") or "Non précisé",
                     "date_creation": date_crea,
                     "annee_ouverture": annee_ouverture,
-                    "adresse": siege.get("adresse_ligne_1", ""),
-                    "code_postal": siege.get("code_postal", ""),
-                    "ville": siege.get("ville", ""),
+                    "adresse": adresse_locale.get("adresse_ligne_1", ""),
+                    "code_postal": adresse_locale.get("code_postal", ""),
+                    "ville": adresse_locale.get("ville", ""),
                     "dirigeant": dirigeant
                 })
 
-            logger.info(f"Pappers : {len(results)} entreprises trouvées (page {page}).")
+            logger.info(f"Pappers : {len(results)} restaurants locaux qualifiés (page {page}).")
             return results
 
         except requests.RequestException as e:
