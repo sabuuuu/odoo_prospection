@@ -1,11 +1,16 @@
 import argparse
+import json
 import logging
 import sys
+import os
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from config import Config
 from odoo_client import OdooClient
 from pappers_client import PappersClient
 from enricher import ContactEnricher
+
+STATE_FILE = "state.json"
 
 def setup_logging():
     """Configure un système de logging propre avec console et fichier rotatif."""
@@ -31,9 +36,27 @@ def setup_logging():
 setup_logging()
 logger = logging.getLogger("ProspectionPipeline")
 
-def run_pipeline(dry_run: bool = False, limit_override: int = None):
+def load_state() -> dict:
+    """Charge l'état d'avancement des pages Pappers."""
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Impossible de lire {STATE_FILE} : {e}")
+    return {}
+
+def save_state(state: dict):
+    """Sauvegarde l'état d'avancement dans state.json."""
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"Impossible d'enregistrer {STATE_FILE} : {e}")
+
+def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state: bool = False):
     logger.info("=" * 60)
-    logger.info("🚀 Démarrage du pipeline de prospection automatisé (Senior Edition)")
+    logger.info("🚀 Démarrage du pipeline de prospection automatisé")
     if dry_run:
         logger.info("⚠️  MODE SIMULATION (DRY RUN) ACTIVÉ : Aucune écriture dans Odoo.")
     logger.info("=" * 60)
@@ -43,6 +66,11 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None):
     except ValueError as e:
         logger.error(f"Erreur de configuration : {e}")
         sys.exit(1)
+
+    # Gestion de l'état Pappers
+    state = {} if reset_state else load_state()
+    if reset_state:
+        logger.info("🔄 Réinitialisation de l'état demandée (--reset-state). Reprise à la page 1.")
 
     logger.info("Connexion aux services (Odoo, Pappers, Claude AI)...")
     odoo = OdooClient(
@@ -69,26 +97,38 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None):
     total_skipped = 0
 
     naf_query = ",".join(Config.TARGET_NAF_CODES)
-    dep_list = Config.TARGET_DEPARTMENTS if Config.TARGET_DEPARTMENTS else [None]
+    dep_list = Config.TARGET_DEPARTMENTS if Config.TARGET_DEPARTMENTS else ["national"]
 
     for dep in dep_list:
-        page = 1
-        max_pages = 10
+        dep_key = str(dep)
+        dep_state = state.get(dep_key, {})
+        
+        # Reprendre directement là où on s'était arrêté
+        start_page = dep_state.get("last_page", 0) + 1
+        page = start_page
+        max_pages = start_page + 15 # Scan jusqu'à 15 pages par run
+
+        dep_param = None if dep == "national" else dep
+        dep_display = f"Dept {dep}" if dep != "national" else "Toute France"
+
+        logger.info(f"\n📍 Zone : {dep_display} | Reprise directe à la **Page {page}** de Pappers (0 crédit gaspillé sur les pages 1 à {page-1})")
 
         while total_added < limit and page <= max_pages:
-            dep_display = f"Dept {dep}" if dep else "Toute France"
-            logger.info(f"\n🔎 Recherche Pappers (Page {page} | NAF: {naf_query} | Zone: {dep_display} | Objectif: {limit - total_added} restants)...")
+            logger.info(f"\n🔎 Requête Pappers (Page {page} | NAF: {naf_query} | {dep_display} | Objectif: {limit - total_added} restants)...")
             
             companies = pappers.search_companies(
                 code_naf=naf_query,
-                departement=dep,
+                departement=dep_param,
                 ca_min=Config.MIN_TURNOVER,
                 limit=20,
                 page=page
             )
 
             if not companies:
-                logger.info("Fin des résultats disponibles sur Pappers.")
+                logger.info(f"Fin des résultats Pappers pour {dep_display}. Remise à zéro du curseur pour les futures créations.")
+                dep_state["last_page"] = 0
+                state[dep_key] = dep_state
+                save_state(state)
                 break
 
             for company in companies:
@@ -153,18 +193,30 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None):
                     if lead_id:
                         total_added += 1
 
+            # Sauvegarder la dernière page traitée
+            dep_state["last_page"] = page
+            dep_state["last_updated"] = datetime.now().isoformat()
+            dep_state["total_added"] = dep_state.get("total_added", 0) + total_added
+            state[dep_key] = dep_state
+            
+            if not dry_run:
+                save_state(state)
+
             page += 1
 
     logger.info("=" * 60)
     logger.info("📊 BILAN DE L'EXÉCUTION DU PIPELINE")
     logger.info(f"   • Nouveaux prospects ajoutés : {total_added}")
     logger.info(f"   • Doublons évités : {total_skipped}")
+    for dep, s in state.items():
+        logger.info(f"   • Curseur Pappers [{dep}] : Page {s.get('last_page', 1)} enregistrée")
     logger.info("=" * 60)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pipeline de Prospection Automatisé")
-    parser.add_argument("--dry-run", action="store_true", help="Mode simulation")
-    parser.add_argument("--limit", type=int, help="Nombre maximum de prospects")
+    parser.add_argument("--dry-run", action="store_true", help="Mode simulation sans écriture")
+    parser.add_argument("--limit", type=int, help="Nombre maximum de prospects à traiter")
+    parser.add_argument("--reset-state", action="store_true", help="Réinitialise le curseur de pages Pappers à 1")
     args = parser.parse_args()
 
-    run_pipeline(dry_run=args.dry_run, limit_override=args.limit)
+    run_pipeline(dry_run=args.dry_run, limit_override=args.limit, reset_state=args.reset_state)
