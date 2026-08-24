@@ -7,7 +7,6 @@ Système autonome et intelligent de **sourcing**, **qualification multi-sources*
 ## 📑 Sommaire
 1. [Vue d'Ensemble & Objectifs](#-vue-densemble--objectifs)
 2. [Schémas d'Architecture & Flux](#-schémas-darchitecture--flux)
-   - [Diagramme de Flux Global (Flowchart)](#1-diagramme-de-flux-global)
    - [Diagramme de Séquence Détaillé](#2-diagramme-de-séquence-détaillé)
 3. [Détail des Étapes du Pipeline](#-détail-des-étapes-du-pipeline)
    - [Étape 1 : Sourcing & Filtrage Pappers](#étape-1--sourcing--filtrage-intelligent-pappers)
@@ -37,64 +36,7 @@ Le pipeline a pour objectif de remplacer la prospection manuelle fastidieuse par
 ---
 
 ## 📊 Schémas d'Architecture & Flux
-
-### 1. Diagramme de Flux Global
-
-```mermaid
-flowchart TD
-    Start([Démarrage Pipeline - main.py]) --> Auth[Authentification Odoo, Pappers & Serper]
-    Auth --> Discover[Introspection Dynamique des Champs Studio Odoo]
-    
-    subgraph SOURCING [1. Sourcing & Filtrage Pappers]
-        PappersQuery[Requête Pappers API v2\nNAF: 5610A/B/C | Dép: 57 | CA min]
-        PappersQuery --> FranchiseCheck{Est-ce une franchise\nou chaîne nationale ?}
-        FranchiseCheck -- Oui --> ExcludeFranchise[🚫 Ignorer le prospect]
-        FranchiseCheck -- Non --> SiegeCheck{Siège hors 57 et\n>5 établissements ?}
-        SiegeCheck -- Oui --> ExcludeGroup[🚫 Ignorer le groupe distant]
-        SiegeCheck -- Non --> ResolveAddr[Sélectionner l'adresse locale Moselle]
-    end
-
-    ResolveAddr --> DedupCheck{Existe déjà dans Odoo ?\nSIREN / Nom / Étape}
-    DedupCheck -- Oui --> SkipDedup[⏭️ Ignorer Doublon]
-    
-    subgraph ENRICHMENT [2. Enrichissement & Qualification Multi-Sources]
-        DedupCheck -- Non --> DirCheck{Dirigeant présent\ndans Pappers ?}
-        DirCheck -- Non --> GouvApi[🏛️ Fallback data.gouv.fr API\nRecherche Dirigeant Inpi/RNE]
-        DirCheck -- Oui --> SearchStep
-        GouvApi --> SearchStep[Recherches Serper.dev Multiples]
-        
-        SearchStep --> S1[📍 Google Maps Places API\nTél GMB, Note, Adresse, Site]
-        SearchStep --> S2[🔍 Google Web Général top 10\nAvis, Horaires, Snippets]
-        SearchStep --> S3[📖 Annuaires Ciblés top 5\nTripAdvisor, PagesJaunes, Editus, Mappy]
-        
-        S1 & S2 & S3 --> WebDetect{Site officiel valide\ndétecté ?}
-        WebDetect -- Oui --> ScrapeWeb[🌐 Scraping Direct Site\nNettoyage HTML + Regex tel: / mailto:]
-        WebDetect -- Non --> RegexExtract
-        ScrapeWeb --> RegexExtract[🧲 Extraction & Validation Regex\nFormat strict 03 XX / 06-07 / 09]
-        
-        RegexExtract --> ClaudePrompt[🧠 Prompt Claude Haiku 4.5\nStorytelling Commercial & Synthèse JSON]
-    end
-
-    subgraph ODOO_SYNC [3. Synchronisation Odoo XML-RPC]
-        ClaudePrompt --> CreateCompany[🏢 res.partner Société\nRemplissage Champs Studio Entreprise]
-        CreateCompany --> RealContactCheck{Téléphone ou Email\ndu dirigeant trouvé ?}
-        RealContactCheck -- Oui --> CreateDirector[👤 res.partner Dirigeant\nRattaché à l'Entreprise parent_id]
-        RealContactCheck -- Oui --> TagDirigeant[🏷️ Ajouter Tag 'Dirigeant']
-        RealContactCheck -- Non --> TagOxoOnly[🏷️ Tag 'Prospection IA OXO' uniquement]
-        
-        CreateDirector --> CreateLead[📋 crm.lead Créé\nChamps Studio + Note IA + Contact Lié]
-        TagDirigeant --> CreateLead
-        TagOxoOnly --> CreateLead
-    end
-
-    CreateLead --> NextItem{Prospects restants\npour atteindre la limite ?}
-    NextItem -- Oui --> PappersQuery
-    NextItem -- Non --> End([📊 Rapport Final & Log rotatif])
-```
-
----
-
-### 2. Diagramme de Séquence Détaillé
+### 1. Diagramme de Séquence Détaillé
 
 ```mermaid
 sequenceDiagram
