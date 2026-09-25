@@ -3,7 +3,7 @@ from typing import Optional
 
 @dataclass
 class Dirigeant:
-    """Modèle représentant un dirigeant d'entreprise."""
+    """Company officer / legal representative."""
     nom: str
     prenom: str
     qualite: str = "Dirigeant"
@@ -17,7 +17,7 @@ class Dirigeant:
 
 @dataclass
 class CompanyProspect:
-    """Modèle représentant une entreprise ciblée issue de Pappers."""
+    """Target business prospect sourced from registry data."""
     siren: str
     siret: str
     denomination: str
@@ -41,7 +41,7 @@ class CompanyProspect:
 
 @dataclass
 class EnrichedContact:
-    """Modèle représentant les coordonnées et l'analyse IA enrichies."""
+    """Enriched contact information and AI qualification analysis."""
     contact_name: Optional[str] = None
     job_title: Optional[str] = None
     phone: Optional[str] = None
@@ -53,5 +53,5 @@ class EnrichedContact:
 
     @property
     def has_real_contact(self) -> bool:
-        """Vérifie si des coordonnées directes (téléphone ou email) ont été trouvées."""
+        """Check if direct contact information (phone or email) was identified."""
         return bool(self.phone or self.email)

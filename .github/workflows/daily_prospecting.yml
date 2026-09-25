@@ -2,17 +2,17 @@
 
 # on:
 #   schedule:
-#     # Exécution tous les soirs à 23:00 (heure de Paris en été = 21:00 UTC, en hiver = 22:00 UTC)
+#     # Runs nightly at 21:00 UTC
 #     - cron: '0 21 * * *'
 #   workflow_dispatch:
 #     inputs:
 #       dry_run:
-#         description: 'Mode simulation (ne pas créer de leads dans Odoo)'
+#         description: 'Simulation mode (do not create records in Odoo)'
 #         required: false
 #         type: boolean
 #         default: false
 #       limit:
-#         description: 'Nombre de prospects à traiter'
+#         description: 'Maximum number of prospects to process'
 #         required: false
 #         type: number
 #         default: 10

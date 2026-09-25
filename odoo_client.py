@@ -7,7 +7,7 @@ from models import CompanyProspect, EnrichedContact
 logger = logging.getLogger(__name__)
 
 class OdooClient:
-    """Client XML-RPC robuste pour interagir avec Odoo CRM et res.partner."""
+    """XML-RPC client for managing Odoo CRM leads and contacts."""
 
     def __init__(self, url: str, db: str, username: str, api_key: str):
         clean_url = url.strip()
@@ -25,7 +25,7 @@ class OdooClient:
         self._discover_fields()
 
     def _authenticate(self):
-        """Authentifie l'utilisateur via XML-RPC avec allow_none=True."""
+        """Authenticate with Odoo server via XML-RPC."""
         try:
             common = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/common', allow_none=True)
             self.uid = common.authenticate(self.db, self.username, self.api_key, {})
@@ -38,7 +38,7 @@ class OdooClient:
             raise
 
     def _discover_fields(self):
-        """Découvre dynamiquement les types et options de sélection pour crm.lead et res.partner."""
+        """Introspect crm.lead and res.partner schemas for configured Studio custom fields."""
         target_lead_keys = {
             'siren': 'x_studio_siren',
             'annee_ouverture': 'x_studio_annee_douverture',
@@ -105,7 +105,7 @@ class OdooClient:
             logger.warning(f"Erreur découverte res.partner : {e}")
 
     def _format_custom_value(self, val: Any, field_info: Dict[str, Any]) -> Any:
-        """Formate et valide la valeur selon le type Odoo attendu (garanti sans None)."""
+        """Convert and validate values based on target Odoo field types."""
         if val is None or val is False or val == "":
             return False
         
@@ -132,7 +132,7 @@ class OdooClient:
             return False
 
     def get_or_create_tag(self, tag_name: str = "Prospection IA OXO") -> Optional[int]:
-        """Récupère ou crée une étiquette CRM."""
+        """Find an existing CRM tag or create it if not present."""
         try:
             tag_ids = self.models.execute_kw(
                 self.db, self.uid, self.api_key,
@@ -155,7 +155,7 @@ class OdooClient:
             return None
 
     def get_stage_id(self, stage_name: str) -> Optional[int]:
-        """Récupère l'ID d'une étape CRM."""
+        """Find a CRM stage ID by its display name."""
         try:
             stage_ids = self.models.execute_kw(
                 self.db, self.uid, self.api_key,
@@ -169,11 +169,11 @@ class OdooClient:
             return None
 
     def get_stage_ids(self, stage_names: list) -> list:
-        """Récupère les IDs pour une liste d'étapes."""
+        """Find multiple CRM stage IDs from a list of stage names."""
         return [sid for name in stage_names if (sid := self.get_stage_id(name))]
 
     def lead_or_partner_exists(self, siren: str, company_name: str, stage_ids: Optional[list] = None) -> bool:
-        """Vérifie l'anti-doublon par SIREN et nom."""
+        """Check whether a lead or partner already exists using SIREN or company name."""
         try:
             domain_lead = [
                 '|',
@@ -195,7 +195,7 @@ class OdooClient:
             return False
 
     def create_company_contact(self, company: CompanyProspect, enriched: EnrichedContact) -> Optional[int]:
-        """Crée un contact Société dans res.partner (garanti sans None pour XML-RPC)."""
+        """Create or retrieve a company partner record (res.partner) with custom fields."""
         try:
             existing = self.models.execute_kw(
                 self.db, self.uid, self.api_key,
@@ -242,7 +242,7 @@ class OdooClient:
                     if formatted is not False:
                         payload[f_info['name']] = formatted
 
-            # Remplacement de tout None restant par False (règle stricte XML-RPC)
+            # Odoo XML-RPC requires False rather than None for empty/null field values
             sanitized_payload = {k: (False if v is None else v) for k, v in payload.items()}
 
             partner_id = self.models.execute_kw(
@@ -257,7 +257,7 @@ class OdooClient:
             return None
 
     def create_director_contact(self, enriched: EnrichedContact, company_partner_id: int, company_name: str) -> Optional[int]:
-        """Crée un contact Individu rattaché à l'entreprise."""
+        """Create an individual contact (res.partner) linked to the company."""
         try:
             payload = {
                 'name': enriched.contact_name,
@@ -289,7 +289,7 @@ class OdooClient:
         tag_ids: Optional[list] = None,
         partner_id: Optional[int] = None
     ) -> Optional[int]:
-        """Crée une piste CRM complète et assainie pour Odoo."""
+        """Create a CRM lead (crm.lead) populated with company data and AI qualification note."""
         try:
             full_contact = f"{company.denomination}, {enriched.contact_name}" if enriched.contact_name else company.denomination
 

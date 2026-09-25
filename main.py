@@ -13,7 +13,7 @@ from enricher import ContactEnricher
 STATE_FILE = "state.json"
 
 def setup_logging():
-    """Configure un système de logging propre avec console et fichier rotatif."""
+    """Configure console and rotating file logging."""
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     
     console_handler = logging.StreamHandler(sys.stdout)
@@ -21,7 +21,7 @@ def setup_logging():
 
     file_handler = RotatingFileHandler(
         "prospection.log",
-        maxBytes=5 * 1024 * 1024, # 5 Mo
+        maxBytes=5 * 1024 * 1024,
         backupCount=3,
         encoding="utf-8"
     )
@@ -37,7 +37,7 @@ setup_logging()
 logger = logging.getLogger("ProspectionPipeline")
 
 def load_state() -> dict:
-    """Charge l'état d'avancement des pages Pappers."""
+    """Load pagination state from disk."""
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
@@ -47,7 +47,7 @@ def load_state() -> dict:
     return {}
 
 def save_state(state: dict):
-    """Sauvegarde l'état d'avancement dans state.json."""
+    """Save pagination state to disk."""
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2, ensure_ascii=False)
@@ -67,7 +67,6 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
         logger.error(f"Erreur de configuration : {e}")
         sys.exit(1)
 
-    # Gestion de l'état Pappers
     state = {} if reset_state else load_state()
     if reset_state:
         logger.info("🔄 Réinitialisation de l'état demandée (--reset-state). Reprise à la page 1.")
@@ -103,10 +102,10 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
         dep_key = str(dep)
         dep_state = state.get(dep_key, {})
         
-        # Reprendre directement là où on s'était arrêté
+        # Resume from the last processed page
         start_page = dep_state.get("last_page", 0) + 1
         page = start_page
-        max_pages = start_page + 15 # Scan jusqu'à 15 pages par run
+        max_pages = start_page + 15
 
         dep_param = None if dep == "national" else dep
         dep_display = f"Dept {dep}" if dep != "national" else "Toute France"
@@ -135,7 +134,7 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
                 if total_added >= limit:
                     break
 
-                # 1. Anti-doublon Odoo
+                # Deduplicate against existing CRM records
                 if odoo.lead_or_partner_exists(company.siren, company.denomination, stage_ids=dedup_stage_ids):
                     logger.info(f"⏭️  [DOUBLON] '{company.denomination}' (SIREN: {company.siren}) est déjà dans Odoo. Ignoré.")
                     total_skipped += 1
@@ -143,8 +142,6 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
 
                 logger.info(f"✨ Nouveau prospect : '{company.denomination}' ({company.ville}) - SIREN: {company.siren}")
 
-                # 2. Enrichissement Web + IA
-                logger.info(f"🧠 Recherche & qualification IA pour '{company.denomination}'...")
                 contact_info = enricher.enrich_contact(
                     company_name=company.denomination,
                     city=company.ville,
@@ -154,7 +151,7 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
                     annee_ouverture=company.annee_ouverture or ""
                 )
 
-                # 3. Création des contacts (res.partner)
+                # Create company partner and optional director contact
                 company_partner_id = None
                 director_partner_id = None
                 
@@ -170,7 +167,6 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
 
                 linked_partner_id = director_partner_id or company_partner_id
 
-                # 4. Tags dynamiques
                 tags_to_add = []
                 if tag_id_oxo:
                     tags_to_add.append((4, tag_id_oxo))
@@ -178,7 +174,6 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
                     tags_to_add.append((4, tag_id_dirigeant))
                     logger.info(f"🏷️  Tag 'Dirigeant' activé pour '{company.denomination}' (Tél: {contact_info.phone}, Email: {contact_info.email})")
 
-                # 5. Création du Lead CRM
                 if dry_run:
                     logger.info(f"[SIMULATION] Lead : {company.denomination} | Contact lié: {linked_partner_id} | Tags: {tags_to_add}")
                     total_added += 1
@@ -193,7 +188,6 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
                     if lead_id:
                         total_added += 1
 
-            # Sauvegarder la dernière page traitée
             dep_state["last_page"] = page
             dep_state["last_updated"] = datetime.now().isoformat()
             dep_state["total_added"] = dep_state.get("total_added", 0) + total_added
@@ -213,10 +207,10 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
     logger.info("=" * 60)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Pipeline de Prospection Automatisé")
-    parser.add_argument("--dry-run", action="store_true", help="Mode simulation sans écriture")
-    parser.add_argument("--limit", type=int, help="Nombre maximum de prospects à traiter")
-    parser.add_argument("--reset-state", action="store_true", help="Réinitialise le curseur de pages Pappers à 1")
+    parser = argparse.ArgumentParser(description="Automated B2B Prospecting Pipeline")
+    parser.add_argument("--dry-run", action="store_true", help="Simulate pipeline execution without writing to Odoo")
+    parser.add_argument("--limit", type=int, help="Maximum number of prospects to process")
+    parser.add_argument("--reset-state", action="store_true", help="Reset Pappers pagination cursor back to page 1")
     args = parser.parse_args()
 
     run_pipeline(dry_run=args.dry_run, limit_override=args.limit, reset_state=args.reset_state)

@@ -12,7 +12,7 @@ from models import Dirigeant, EnrichedContact
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
 
-# Domaines à exclure absolument (pas des sites officiels de restaurants)
+# Platforms and directories to exclude when searching for official restaurant websites
 SPAM_AND_DIRECTORY_DOMAINS = [
     'blogspot.com', 'wordpress.com', 'wixsite.com', 'weebly.com', 'carrd.co', 
     'over-blog.com', 'canalblog.com', 'tumblr.com', 'medium.com', 'site123.me',
@@ -24,7 +24,7 @@ SPAM_AND_DIRECTORY_DOMAINS = [
     'insurance', 'assurance', 'casino', 'crypto', 'loan', 'credit', 'horaire', 'annuaire'
 ]
 
-# Domaines d'emails parasites à ignorer
+# Generic or placeholder domains to ignore during email extraction
 IGNORED_EMAIL_DOMAINS = [
     'example.com', 'sentry.io', 'schema.org', 'googleapis.com', 'w3.org', 
     'wordpress.org', 'typemade.mx', 'indiantypefoundry.com', 'astigmatic.com',
@@ -33,14 +33,14 @@ IGNORED_EMAIL_DOMAINS = [
 ]
 
 def is_valid_restaurant_website(url: Optional[str]) -> bool:
-    """Vérifie si l'URL correspond à un vrai site web de restaurant (et non un blog ou annuaire)."""
+    """Verify whether a URL is likely a real restaurant website rather than an aggregator or directory."""
     if not url:
         return False
     url_lower = url.lower()
     return not any(spam in url_lower for spam in SPAM_AND_DIRECTORY_DOMAINS)
 
 def format_french_phone(raw_phone: str) -> Optional[str]:
-    """Valide et formate un numéro de téléphone français standard (ex: 03 87 06 15 33)."""
+    """Validate and format a standard 10-digit French phone number."""
     if not raw_phone:
         return None
     
@@ -58,7 +58,7 @@ def format_french_phone(raw_phone: str) -> Optional[str]:
     return None
 
 def extract_valid_french_phones(text: str) -> List[str]:
-    """Extrait uniquement les vrais numéros français valides d'un texte."""
+    """Extract and format valid French phone numbers from text, prioritizing regional landlines and mobiles."""
     raw_matches = re.findall(r'(?:(?:\+|00)33[\s.-]?|0)[1-79](?:[\s.-]?\d{2}){4}', text)
     valid_phones = []
     for m in raw_matches:
@@ -66,12 +66,11 @@ def extract_valid_french_phones(text: str) -> List[str]:
         if formatted and formatted not in valid_phones:
             valid_phones.append(formatted)
     
-    # Prioriser les lignes fixes régionales (03) et mobiles (06/07)
     valid_phones.sort(key=lambda p: (0 if p.startswith('03') else (1 if p.startswith(('06', '07')) else 2)))
     return valid_phones
 
 def extract_valid_emails(text: str) -> List[str]:
-    """Extrait uniquement les vrais emails professionnels."""
+    """Extract valid email addresses from text, excluding known placeholder domains."""
     raw_emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
     valid_emails = []
     for e in raw_emails:
@@ -82,6 +81,7 @@ def extract_valid_emails(text: str) -> List[str]:
     return valid_emails
 
 def create_resilient_session(retries: int = 3, backoff_factor: float = 0.5) -> requests.Session:
+    """Create an HTTP session configured with automatic retry on transient errors."""
     session = requests.Session()
     retry_strategy = Retry(
         total=retries,
@@ -95,7 +95,7 @@ def create_resilient_session(retries: int = 3, backoff_factor: float = 0.5) -> r
     return session
 
 class ContactEnricher:
-    """Enrichisseur expert avec recherche multi-sources, scraping direct et validation stricte."""
+    """Multi-source enrichment engine combining Places API, web search, web scraping, and Claude AI."""
 
     def __init__(self, anthropic_key: str, serper_key: Optional[str] = None, model: str = "claude-haiku-4-5-20251001"):
         self.claude = anthropic.Anthropic(api_key=anthropic_key)
@@ -108,7 +108,7 @@ class ContactEnricher:
             logger.warning("⚠️ Aucune clé SERPER_API_KEY.")
 
     def _search_dirigeant_gouv(self, siren: str) -> Optional[Dirigeant]:
-        """Recherche le dirigeant via data.gouv.fr avec gestion sécurisée des None."""
+        """Fallback lookup for legal representatives via data.gouv.fr API."""
         try:
             url = f"https://recherche-entreprises.api.gouv.fr/search?q={siren}&page=1&per_page=1"
             response = self.session.get(url, timeout=6)
@@ -129,7 +129,7 @@ class ContactEnricher:
         return None
 
     def _clean_html(self, html_content: str) -> str:
-        """Supprime les balises scripts, styles et SVG pour éviter de capturer du code CSS/JS."""
+        """Strip script tags, style sheets, SVGs, comments, and extra whitespace from HTML."""
         text = re.sub(r'<script.*?</script>', ' ', html_content, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'<style.*?</style>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'<svg.*?</svg>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
@@ -138,7 +138,7 @@ class ContactEnricher:
         return re.sub(r'\s+', ' ', text)
 
     def _scrape_website(self, website_url: str) -> Tuple[List[str], List[str], str]:
-        """Scrape proprement le site officiel pour extraire téléphone et email."""
+        """Scrape venue homepage and contact page for direct phone and email."""
         if not is_valid_restaurant_website(website_url):
             return [], [], ""
         
@@ -179,7 +179,7 @@ class ContactEnricher:
         return phones, emails, clean_text_content[:1500]
 
     def _serper_places(self, query: str) -> Tuple[str, Optional[str], Optional[str]]:
-        """Recherche Google Maps Places avec extraction du téléphone GMB vérifié et du site web."""
+        """Query Google Maps Places for verified GMB phone and website."""
         if not self.serper_key:
             return "", None, None
         try:
@@ -215,7 +215,7 @@ class ContactEnricher:
         return "", None, None
 
     def _serper_search(self, query: str, num_results: int = 10) -> Tuple[str, Optional[str]]:
-        """Recherche Google Web générale."""
+        """Perform general Google search via Serper."""
         if not self.serper_key:
             return "", None
         try:
@@ -252,9 +252,7 @@ class ContactEnricher:
         tranche_effectif: str = "",
         annee_ouverture: str = ""
     ) -> EnrichedContact:
-        """Pipeline complet d'enrichissement : Places + Search (num=10) + Annuaires + Scraping + Claude AI."""
-        
-        # 1. Fallback data.gouv si dirigeant absent
+        """Execute full enrichment pipeline: Places, web search, scraping, and Claude synthesis."""
         if not dirigeant and siren:
             logger.info(f"🔎 Dirigeant absent de Pappers, recherche via data.gouv.fr (SIREN: {siren})...")
             dirigeant = self._search_dirigeant_gouv(siren)
@@ -269,7 +267,6 @@ class ContactEnricher:
         website_to_scrape = None
         gmb_phone = None
 
-        # 2. Requête Google Maps Places
         places_query = f'"{clean_name}" {city} restaurant'
         logger.info(f"🔍 [1/3] Google Maps Places : '{places_query}'...")
         places_res, site_places, phone_places = self._serper_places(places_query)
@@ -280,7 +277,6 @@ class ContactEnricher:
         if phone_places:
             gmb_phone = phone_places
 
-        # 3. Requête Google Web générale (num=10 pour attraper Editus, Mappy, avis)
         web_query = f'"{clean_name}" {city} restaurant téléphone'
         logger.info(f"🔍 [2/3] Google Web général (top 10) : '{clean_name} {city}'...")
         web_res, site_web = self._serper_search(web_query, num_results=10)
@@ -289,14 +285,12 @@ class ContactEnricher:
         if not website_to_scrape and site_web:
             website_to_scrape = site_web
 
-        # 4. Requête Annuaires ciblée (TripAdvisor, PagesJaunes, Editus, Mappy)
         dir_query = f'"{clean_name}" {city} site:tripadvisor.fr OR site:pagesjaunes.fr OR site:editus.lu OR site:mappy.com'
         logger.info(f"🔍 [3/3] Annuaires spécialisés : '{clean_name}'...")
         dir_res, _ = self._serper_search(dir_query, num_results=5)
         if dir_res:
             all_results.append("=== ANNUAIRES (TRIPADVISOR / PAGESJAUNES / EDITUS) ===\n" + dir_res)
 
-        # 5. Scraping direct du site officiel
         scraped_phones = []
         scraped_emails = []
         if website_to_scrape and is_valid_restaurant_website(website_to_scrape):
@@ -310,11 +304,10 @@ class ContactEnricher:
 
         combined_results = "\n\n".join(all_results)
 
-        # 6. Extraction regex globale
         extracted_phones = extract_valid_french_phones(combined_results)
         extracted_emails = extract_valid_emails(combined_results)
 
-        # Fusion avec priorité : GMB > Scrapé > Regex Web
+        # Merge contact details with priority: GMB > scraped > web regex
         all_phones = []
         if gmb_phone:
             all_phones.append(gmb_phone)

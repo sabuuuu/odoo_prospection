@@ -7,7 +7,6 @@ from models import CompanyProspect, Dirigeant
 
 logger = logging.getLogger(__name__)
 
-# Liste noire des chaînes, franchises et réseaux nationaux
 NATIONAL_CHAINS_EXCLUDE = [
     "mcdonald", "mc donald", "burger king", "kfc", "quick", "subway", "o'tacos", "otacos",
     "buffalo grill", "courtepaille", "hippopotamus", "bistrot regent", "bistrot régent",
@@ -22,7 +21,7 @@ NATIONAL_CHAINS_EXCLUDE = [
 ]
 
 def create_resilient_session(retries: int = 3, backoff_factor: float = 0.5) -> requests.Session:
-    """Crée une session HTTP résiliente avec retry automatique sur erreurs temporaires."""
+    """Create an HTTP session configured with automatic retry on transient errors."""
     session = requests.Session()
     retry_strategy = Retry(
         total=retries,
@@ -36,7 +35,7 @@ def create_resilient_session(retries: int = 3, backoff_factor: float = 0.5) -> r
     return session
 
 class PappersClient:
-    """Client API résilient pour Pappers avec filtrage des franchises et typage fort."""
+    """Client for the Pappers API with franchise filtering and structured data extraction."""
 
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -44,7 +43,7 @@ class PappersClient:
         self.session = create_resilient_session()
 
     def _is_national_chain(self, company_name: str, enseigne: str = "") -> bool:
-        """Détecte si le restaurant appartient à une chaîne ou franchise nationale connue."""
+        """Check if the business matches a known national chain or franchise."""
         full_text = f"{company_name} {enseigne}".lower()
         return any(chain in full_text for chain in NATIONAL_CHAINS_EXCLUDE)
 
@@ -56,7 +55,7 @@ class PappersClient:
         limit: int = 10,
         page: int = 1
     ) -> List[CompanyProspect]:
-        """Recherche des restaurants indépendants et groupes locaux qualifiés."""
+        """Search for active independent businesses and local groups."""
         params = {
             "api_token": self.api_key,
             "par_page": min(limit, 100),
@@ -84,15 +83,14 @@ class PappersClient:
                 siege = item.get("siege", {})
                 enseigne = siege.get("enseigne", "")
                 
-                # 1. Filtre chaînes & franchises
                 if self._is_national_chain(name, enseigne):
                     logger.info(f"🚫 [CHAÎNE/FRANCHISE EXCLUE] '{name}' ({enseigne}) ignoré.")
                     continue
 
-                # 2. Filtre siège distant
                 siege_cp = str(siege.get("code_postal", ""))
                 matching_etabs = item.get("matching_etablissements") or item.get("etablissements", [])
                 
+                # Exclude distant large enterprises (>5 establishments or >50 employees); retain local branch address
                 if departement and not siege_cp.startswith(str(departement)):
                     if len(matching_etabs) > 5 or item.get("effectif_min", 0) > 50:
                         logger.info(f"🚫 [GROUPE NATIONAL EXCLU] '{name}' (Siège: {siege.get('ville')}) ignoré.")
@@ -108,7 +106,6 @@ class PappersClient:
                 else:
                     adresse_locale = siege
 
-                # Extraction Dirigeant typé
                 representants = item.get("representants", [])
                 dirigeant = None
                 if representants:

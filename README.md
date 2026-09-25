@@ -1,42 +1,43 @@
-# 🚀 Pipeline de Prospection Automatisé B2B — Restauration & Odoo CRM
+# 🚀 Automated B2B Prospecting Pipeline — Hospitality & Odoo CRM
 
-Système autonome et intelligent de **sourcing**, **qualification multi-sources**, **enrichissement IA** et **synchronisation CRM** pour le secteur de la restauration, connecté en direct à **Odoo CRM** et au module **Contacts (`res.partner`)**.
-
----
-
-## 📑 Sommaire
-1. [Vue d'Ensemble & Objectifs](#-vue-densemble--objectifs)
-2. [Schémas d'Architecture & Flux](#-schémas-darchitecture--flux)
-   - [Diagramme de Séquence Détaillé](#2-diagramme-de-séquence-détaillé)
-3. [Détail des Étapes du Pipeline](#-détail-des-étapes-du-pipeline)
-   - [Étape 1 : Sourcing & Filtrage Pappers](#étape-1--sourcing--filtrage-intelligent-pappers)
-   - [Étape 2 : Anti-Doublon Odoo](#étape-2--contrôle-anti-doublon-odoo)
-   - [Étape 3 : Résolution du Dirigeant Légal](#étape-3--résolution-du-dirigeant-légal)
-   - [Étape 4 : Pipeline d'Enrichissement Multi-Sources (Serper & Web)](#étape-4--pipeline-denrichissement-multi-sources)
-   - [Étape 5 : Scraping Direct du Site Web Officiel](#étape-5--scraping-direct-du-site-officiel)
-   - [Étape 6 : Qualification & Storytelling par Claude AI](#étape-6--qualification--storytelling-par-claude-ai)
-   - [Étape 7 : Synchronisation Odoo (CRM + Contacts)](#étape-7--synchronisation-odoo-crm--contacts)
-4. [Tableau de Correspondance des Champs (Mapping Studio)](#-tableau-de-correspondance-des-champs-studio)
-5. [Règles de Décision & Logique Métier](#-règles-de-décision--logique-métier)
-6. [Architecture Technique & Fichiers](#-architecture-technique--fichiers)
-7. [Installation & Configuration](#-installation--configuration)
-8. [Automatisation CI/CD (GitHub Actions)](#-automatisation-cicd)
+An autonomous, multi-source **lead sourcing**, **qualification**, **AI-powered enrichment**, and **CRM synchronization** pipeline tailored for the hospitality industry, directly integrated with **Odoo CRM** and the **Contacts (`res.partner`)** module.
 
 ---
 
-## 🎯 Vue d'Ensemble & Objectifs
-
-Le pipeline a pour objectif de remplacer la prospection manuelle fastidieuse par un flux entièrement automatisé qui :
-- **Cible** les restaurants indépendants et les groupes locaux à fort potentiel (NAF 56.10A, 56.10B, 56.10C) dans une zone géographique définie (ex: Moselle - 57).
-- **Écarte** automatiquement les chaînes et franchises nationales non pertinentes.
-- **Récupère** l'identité du dirigeant légal, le téléphone vérifié, l'email direct et le site web.
-- **Rédige** une synthèse commerciale dense (façon briefing d'avant rendez-vous stratégique) grâce à l'IA.
-- **Alimente** Odoo avec création d'une fiche **Contact Société**, d'un sous-contact **Dirigeant** (si coordonnées réelles) et d'un **Lead CRM** complet avec tags et champs personnalisés Studio.
+## 📑 Table of Contents
+1. [Overview & Objectives](#-overview--objectives)
+2. [Architecture & Flowcharts](#-architecture--flowcharts)
+   - [Detailed Sequence Diagram](#1-detailed-sequence-diagram)
+3. [Pipeline Step Breakdown](#-pipeline-step-breakdown)
+   - [Step 1: Pappers Sourcing & Intelligent Filtering](#step-1-intelligent-sourcing--filtering-pappers)
+   - [Step 2: Odoo Deduplication Check](#step-2-odoo-deduplication-check)
+   - [Step 3: Legal Representative Resolution](#step-3-legal-representative-resolution)
+   - [Step 4: Multi-Source Enrichment Pipeline (Serper & Web)](#step-4-multi-source-enrichment-pipeline)
+   - [Step 5: Direct Website Scraping](#step-5-direct-website-scraping)
+   - [Step 6: Qualification & Commercial Synthesis (Claude AI)](#step-6-qualification--commercial-synthesis-claude-ai)
+   - [Step 7: Odoo Synchronization (CRM + Contacts)](#step-7-odoo-synchronization-crm--contacts)
+4. [Field Mapping Table (Odoo Studio)](#-field-mapping-table-studio)
+5. [Decision Logic & Business Rules](#-decision-logic--business-rules)
+6. [Project Structure](#-project-structure)
+7. [Installation & Setup](#-installation--setup)
+8. [CI/CD Automation (GitHub Actions)](#-cicd-automation)
 
 ---
 
-## 📊 Schémas d'Architecture & Flux
-### 1. Diagramme de Séquence Détaillé
+## 🎯 Overview & Objectives
+
+This pipeline replaces manual sales prospecting with a fully automated, resilient workflow designed to:
+- **Target** high-potential independent restaurants and local restaurant groups (NAF codes `56.10A`, `56.10B`, `56.10C`) within a defined geographical area (e.g., Moselle - Department 57).
+- **Filter out** standardized national chains and fast-food franchises automatically.
+- **Identify** legal directors/officers, verified telephone numbers, direct emails, and official websites.
+- **Generate** concise, high-impact commercial briefing notes using Claude AI prior to sales outreach.
+- **Populate Odoo** with a **Company Contact**, an individual **Director Contact** (when direct phone/email details are found), and a comprehensive **CRM Lead** equipped with custom Studio fields and tags.
+
+---
+
+## 📊 Architecture & Flowcharts
+
+### 1. Detailed Sequence Diagram
 
 ```mermaid
 sequenceDiagram
@@ -47,46 +48,46 @@ sequenceDiagram
     participant Pappers as PappersClient
     participant Gouv as data.gouv.fr API
     participant Serper as Serper.dev (Google API)
-    participant Web as Site Web Restaurant
-    participant Claude as Claude AI (Haiku 4.5)
+    participant Web as Venue Website
+    participant Claude as Claude AI (Haiku)
 
-    User->>Main: Exécution (python main.py --limit 10)
-    Main->>Odoo: Authentification XML-RPC & Découverte fields_get()
-    Odoo-->>Main: Mapping des champs Studio Lead & Partner
+    User->>Main: Execute (python main.py --limit 10)
+    Main->>Odoo: XML-RPC Authentication & Schema Introspection (fields_get)
+    Odoo-->>Main: Mapped Studio fields for Leads & Partners
     
-    loop Pour chaque page Pappers (jusqu'à limite)
+    loop For each Pappers page (until limit reached)
         Main->>Pappers: search_companies(naf, dept, ca_min)
-        Pappers-->>Main: Liste des CompanyProspect (filtrés anti-franchises)
+        Pappers-->>Main: List of CompanyProspects (filtered against franchises)
         
-        loop Pour chaque prospect qualifié
+        loop For each qualified prospect
             Main->>Odoo: lead_or_partner_exists(siren, name)
-            alt Déjà présent
-                Odoo-->>Main: True (Doublon)
-            else Nouveau Prospect
+            alt Already exists in CRM
+                Odoo-->>Main: True (Duplicate skipped)
+            else New Prospect
                 Odoo-->>Main: False
-                opt Si Dirigeant absent de Pappers
+                opt If legal representative is missing in Pappers
                     Main->>Gouv: GET /search?q={siren}
-                    Gouv-->>Main: Dirigeant légal (nom, prenom, qualite)
+                    Gouv-->>Main: Officer details (name, title)
                 end
                 
                 Main->>Serper: POST /places (Google Maps)
-                Serper-->>Main: Tél GMB, Note, Site web officiel
+                Serper-->>Main: GMB Phone, Rating, Reviews, Official Website
                 
-                Main->>Serper: POST /search (Web top 10 + Annuaires)
-                Serper-->>Main: Extraits TripAdvisor, PagesJaunes, Editus
+                Main->>Serper: POST /search (Web top 10 + Directories)
+                Serper-->>Main: TripAdvisor, PagesJaunes, Editus snippets
                 
-                opt Si Site officiel valide détecté
-                    Main->>Web: GET / et /contact (timeout 4s)
-                    Web-->>Main: Code HTML (nettoyé scripts/styles)
+                opt If valid official website detected
+                    Main->>Web: GET / and /contact (timeout 4s)
+                    Web-->>Main: Sanitized HTML content
                 end
                 
-                Main->>Claude: Prompt Commercial (Données + Extraits + Regex)
+                Main->>Claude: Sales Analysis Prompt (Data + Snippets + Regex contacts)
                 Claude-->>Main: JSON {contact_name, phone, email, website, summary}
                 
                 Main->>Odoo: create_company_contact(company, enriched)
                 Odoo-->>Main: company_partner_id
                 
-                opt Si téléphone ou email direct trouvé
+                opt If direct phone or email found
                     Main->>Odoo: create_director_contact(enriched, company_partner_id)
                     Odoo-->>Main: director_partner_id
                 end
@@ -97,239 +98,253 @@ sequenceDiagram
         end
     end
     
-    Main->>User: Bilan d'exécution & Fichier prospection.log
+    Main->>User: Execution summary & updated state
 ```
 
 ---
 
-## 🔍 Détail des Étapes du Pipeline
+## 🔍 Pipeline Step Breakdown
 
-### Étape 1 : Sourcing & Filtrage Intelligent (Pappers)
-- **Source** : API Pappers v2 (`/recherche`).
-- **Critères** :
-  - Codes NAF ciblés : `5610A` (Restauration traditionnelle), `5610B` (Cafétérias/fast-food de qualité), `5610C` (Restauration rapide).
-  - Zone géographique : Département spécifié (ex: `57` pour la Moselle).
-  - Statut : Entreprises inscrites au RCS et non cessées.
-- **Filtres Métier Intelligents** :
-  - **Exclusion des franchises nationales** : Liste noire de plus de 50 enseignes standardisées (*McDonald's, Burger King, KFC, Subway, O'Tacos, Buffalo Grill, Courtepaille, Flunch, Autogrill, Crescendo, Paul, Brioche Dorée, etc.*).
-  - **Exclusion des groupes distants** : Si le siège est hors département et que l'entité possède plus de 5 établissements ou 50 salariés, elle est écartée.
-  - **Préservation des mini-groupes locaux** : Les exploitants indépendants multi-sites basés en Moselle (ex: *Groupe Rapenne, Tronche, Lomuscio / 100 Patates, Ar Preti, Martina Group*) sont **conservés**.
-  - **Résolution d'adresse locale** : Si le siège administratif est ailleurs mais que l'établissement actif est en Moselle, le script retient l'adresse locale du 57.
-
----
-
-### Étape 2 : Contrôle Anti-Doublon (Odoo)
-- Avant d'engager des requêtes d'enrichissement payantes (Serper, Claude), le script interroge Odoo par XML-RPC.
-- **Vérification croisée** :
-  - Recherche par numéro `SIREN` dans les champs Studio.
-  - Recherche par `Nom de l'établissement` dans le CRM.
-  - Filtrage optionnel sur les étapes actives (`Liste Restaurant`, `À contacter`).
-- Si l'entreprise existe déjà, elle est sautée instantanément (`⏭️ [DOUBLON]`).
+### Step 1: Intelligent Sourcing & Filtering (Pappers)
+- **Source**: Pappers API v2 (`/recherche`).
+- **Target Criteria**:
+  - French NAF codes: `5610A` (Traditional restaurant), `5610B` (Cafeterias / self-service), `5610C` (Fast food).
+  - Geographical area: Targeted department (e.g., `57` for Moselle).
+  - Status: Active RCS registered companies (`entreprise_cessee: false`).
+- **Smart Filtering Rules**:
+  - **Exclusion of national chains & franchises**: Automatic matching against a blacklist of 50+ standardized brands (*McDonald's, Burger King, KFC, Subway, O'Tacos, Buffalo Grill, Courtepaille, Flunch, Autogrill, Crescendo, Paul, Brioche Dorée, etc.*).
+  - **Exclusion of distant corporate groups**: If headquarters are located outside the target department and the company holds more than 5 establishments or more than 50 employees, it is excluded.
+  - **Preservation of regional groups**: Independent multi-site operators based locally (e.g., *Groupe Rapenne, Tronche, Lomuscio / 100 Patates, Ar Preti, Martina Group*) are **retained**.
+  - **Local establishment address resolution**: When administrative headquarters are situated elsewhere but an active establishment operates in the target department, the local address is prioritized.
 
 ---
 
-### Étape 3 : Résolution du Dirigeant Légal
-- **Source primaire** : Représentants légaux fournis par Pappers.
-- **Fallback gratuit `data.gouv.fr`** : Si Pappers ne fournit pas de dirigeant pour les petites structures (ex: micro-entreprises, SAS récentes), interrogation de l'API publique de l'Annuaire des Entreprises (`recherche-entreprises.api.gouv.fr`).
-- **Support des Personnes Morales** : Prise en compte des holdings présidentes ou gérants associés.
+### Step 2: Odoo Deduplication Check
+- Before consuming paid external enrichment requests (Serper, Claude), the pipeline checks Odoo via XML-RPC.
+- **Cross-verification criteria**:
+  - Search by `SIREN` identifier in custom Studio fields.
+  - Search by `Company Name` in CRM leads and partners.
+  - Optional stage-specific filtering (e.g., `Liste Restaurant`, `À contacter`).
+- Existing companies are skipped immediately (`⏭️ [DOUBLON]`), preserving API credits.
 
 ---
 
-### Étape 4 : Pipeline d'Enrichissement Multi-Sources
-Chaque nouveau prospect fait l'objet d'une séquence de 3 requêtes ciblées via **Serper.dev** :
-1. **Google Maps Places (`/places`)** :
-   - Extrait la note moyenne (ex: 4.5/5), le nombre d'avis, la catégorie, l'adresse normalisée, le site web et le numéro de téléphone certifié Google My Business (GMB).
-2. **Google Web Général (`/search`, top 10)** :
-   - Requête : `"{Nom}" {Ville} restaurant téléphone`
-   - Récupère les articles de presse locale, les pages Facebook, Instagram et avis clients.
-3. **Annuaires Professionnels Ciblés (`/search`, top 5)** :
-   - Requête : `"{Nom}" {Ville} site:tripadvisor.fr OR site:pagesjaunes.fr OR site:editus.lu OR site:mappy.com`
-   - Capture les téléphones fixes et mobiles enregistrés sur les annuaires pros.
+### Step 3: Legal Representative Resolution
+- **Primary Source**: Company officers returned directly by Pappers.
+- **Public Registry Fallback (`data.gouv.fr`)**: When legal representative data is missing in Pappers (common for micro-enterprises or recently incorporated SAS companies), the pipeline queries the public French Business Directory API (`recherche-entreprises.api.gouv.fr`).
+- **Legal Entity Support**: Handles holding companies acting as corporate presidents or managing partners.
 
 ---
 
-### Étape 5 : Scraping Direct du Site Officiel
-- **Filtrage anti-spam (`is_valid_restaurant_website`)** :
-  - Exclusion automatique des plateformes gratuites (`*.blogspot.com`, `*.wordpress.com`, `*.wixsite.com`, `*.carrd.co`) et des comparateurs de spam (`insurance`, `casino`, `crypto`).
-- **Extraction sur domaine valide** :
-  - Si un vrai site web existe (ex: `laprisondoree.com`), le script effectue une requête HTTP directe sur `/` et `/contact`.
-  - Nettoyage du code HTML (purge des balises `<script>`, `<style>`, `<svg>`).
-  - Détection des liens `tel:` et `mailto:`.
-  - Validation stricte des numéros français : 10 chiffres standardisés `03 XX XX XX XX` (lignes fixes Grand-Est), `06/07 XX XX XX XX` (mobiles) ou `09 XX XX XX XX`.
+### Step 4: Multi-Source Enrichment Pipeline
+Each newly identified prospect undergoes a sequence of 3 targeted requests via **Serper.dev**:
+1. **Google Maps Places (`/places`)**:
+   - Extracts average rating (e.g., 4.5/5), review count, business category, normalized address, website, and certified Google My Business (GMB) phone number.
+2. **General Google Web Search (`/search`, top 10)**:
+   - Query: `"{Name}" {City} restaurant phone`
+   - Captures local press mentions, social profiles (Facebook, Instagram), and customer reviews.
+3. **Targeted Professional Directories (`/search`, top 5)**:
+   - Query: `"{Name}" {City} site:tripadvisor.fr OR site:pagesjaunes.fr OR site:editus.lu OR site:mappy.com`
+   - Captures landlines and business listings registered on local directories.
 
 ---
 
-### Étape 6 : Qualification & Storytelling par Claude AI
-- **Modèle** : `claude-haiku-4-5-20251001` (Anthropic).
-- **Rôle** : Analyste commercial expert dans la restauration B2B.
-- **Mission** :
-  - Synthétiser toutes les informations collectées (âge du dirigeant, effectif, année de création, réputation, concept, spécialités culinaires, dynamique locale).
-  - Rédiger une note dense, fluide et qualitative sans jargon superflu.
-  - Retourner une structure JSON validée avec assignation prioritaire des coordonnées réelles.
+### Step 5: Direct Website Scraping
+- **Directory and Spam Domain Filtering (`is_valid_restaurant_website`)**:
+  - Automatically discards free site builders (`*.blogspot.com`, `*.wordpress.com`, `*.wixsite.com`, `*.carrd.co`) and aggregators/spam domains (`insurance`, `casino`, `crypto`).
+- **Targeted Domain Extraction**:
+  - When a legitimate website exists, the pipeline executes HTTP requests to `/` and `/contact`.
+  - Cleans HTML markup (strips `<script>`, `<style>`, `<svg>`, and comment tags).
+  - Identifies `tel:` and `mailto:` links.
+  - Validates standard French phone formats: 10 digits (`03 XX XX XX XX` for Grand-Est regional landlines, `06/07 XX XX XX XX` for mobile lines, or `09 XX XX XX XX`).
 
 ---
 
-### Étape 7 : Synchronisation Odoo (CRM + Contacts)
-Le connecteur XML-RPC sécurisé effectue les opérations suivantes dans Odoo :
-
-1. **Module Contacts (`res.partner`) — Contact Entreprise** :
-   - Création d'une fiche Société (`is_company: True`).
-   - Renseignement de l'adresse, code postal, ville, pays (France - ID: 75), site web, SIRET (`company_registry`).
-   - Remplissage de l'intégralité des champs Studio Entreprise (SIREN, NAF, Forme juridique, Effectif, CA, Année CA, `est_une_entreprise: True`).
-
-2. **Module Contacts (`res.partner`) — Contact Dirigeant** *(Conditionnel)* :
-   - Créé **uniquement** si un numéro de téléphone ou un email réel a été confirmé.
-   - Fiche Individu (`is_company: False`) rattachée à l'entreprise via `parent_id`.
-
-3. **Module CRM (`crm.lead`) — Piste Commerciale** :
-   - Liaison directe avec le contact dirigeant (en priorité) ou le restaurant via `partner_id`.
-   - Renseignement des champs standards (nom, email, téléphone, site, adresse, note narrative dans `description`).
-   - Renseignement des champs Studio Lead (`x_studio_siren`, `x_studio_nombre_de_salaries`, `x_studio_chiffre_daffaires`, etc.).
-   - **Étiquetage dynamique** :
-     - `Prospection IA OXO` : systématiquement ajouté.
-     - `Dirigeant` : ajouté **uniquement** si téléphone/email réel trouvé.
+### Step 6: Qualification & Commercial Synthesis (Claude AI)
+- **Model**: `claude-3-5-haiku-20241022` / `claude-haiku-4-5-20251001` (Anthropic).
+- **Role**: Expert B2B sales analyst specializing in the hospitality industry.
+- **Mission**:
+  - Synthesize collected intelligence (officer background, head count, founding date, online reputation, culinary concept, and market dynamics).
+  - Draft a concise, high-value briefing note formatted for immediate CRM sales review.
+  - Return structured JSON with validated direct contact details.
 
 ---
 
-## 📋 Tableau de Correspondance des Champs Studio
+### Step 7: Odoo Synchronization (CRM + Contacts)
+A robust XML-RPC client manages records in Odoo:
 
-| Donnée Métier | Type Odoo | Nom technique `crm.lead` | Nom technique `res.partner` |
+1. **Contacts Module (`res.partner`) — Company Contact**:
+   - Creates a company partner (`is_company: True`).
+   - Fills address, postal code, city, country (France - ID: 75), website, and SIRET (`company_registry`).
+   - Populates Studio custom fields (SIREN, NAF, legal structure, employee headcount, annual revenue, revenue year, `est_une_entreprise: True`).
+
+2. **Contacts Module (`res.partner`) — Director Contact** *(Conditional)*:
+   - Created **only** if a verified direct phone number or email was confirmed.
+   - Individual record (`is_company: False`) linked to the parent company via `parent_id`.
+
+3. **CRM Module (`crm.lead`) — Opportunity / Lead**:
+   - Linked directly to the director (priority) or company partner via `partner_id`.
+   - Fills standard lead fields (name, email, phone, website, address, narrative note in `description`).
+   - Maps custom Studio fields (`x_studio_siren`, `x_studio_nombre_de_salaries`, `x_studio_chiffre_daffaires`, etc.).
+   - **Dynamic Tagging**:
+     - `Prospection IA OXO`: Systematically appended.
+     - `Dirigeant`: Appended **only** when direct officer contact details are confirmed.
+
+---
+
+## 📋 Field Mapping Table (Studio)
+
+| Business Field | Odoo Type | Technical Name (`crm.lead`) | Technical Name (`res.partner`) |
 | :--- | :---: | :--- | :--- |
-| **Numéro SIREN** | Char / Integer | `x_studio_siren` (Char) | `x_studio_siren` (Integer) |
-| **Numéro SIRET** | Char | *(Standard)* | `company_registry` |
-| **Année d'ouverture** | Char | `x_studio_annee_douverture` | `x_studio_annee_douverture` |
-| **Raison sociale** | Char | `x_studio_raison_sociale` | `x_studio_raison_sociale` |
-| **Forme juridique** | Char | `x_studio_forme_juridique` | `x_studio_forme_juridique` |
-| **Nombre de salariés** | Char | `x_studio_nombre_de_salaries` | `x_studio_effectif` |
-| **Code & Libellé NAF** | Char | `x_studio_naf` | `x_studio_naf` |
-| **Lien LinkedIn** | Char | `x_studio_lien_linkedin` | `x_studio_lien_linkedin` |
-| **Chiffre d'affaires** | Float / Char | `x_studio_chiffre_daffaires` | `x_studio_chiffre_daffaire_dernier_exercice` |
-| **Année du CA** | Char | `x_studio_annee_ca` | `x_studio_annee_ca` |
-| **Type de restaurant** | Selection / Char | `x_studio_type_de_restaurant` | *(Standard)* |
-| **Adresse du siège** | Char | `x_studio_adresse_du_siege_social` | `street` |
-| **Site Web** | Char | `website` | `website` & `x_studio_web` |
-| **Est une entreprise** | Boolean | *(N/A)* | `x_studio_est_une_entreprise` (`True`) |
+| **SIREN Number** | Char / Integer | `x_studio_siren` (Char) | `x_studio_siren` (Integer) |
+| **SIRET Number** | Char | *(Standard)* | `company_registry` |
+| **Opening Year** | Char | `x_studio_annee_douverture` | `x_studio_annee_douverture` |
+| **Corporate Name** | Char | `x_studio_raison_sociale` | `x_studio_raison_sociale` |
+| **Legal Structure** | Char | `x_studio_forme_juridique` | `x_studio_forme_juridique` |
+| **Employee Headcount** | Char | `x_studio_nombre_de_salaries` | `x_studio_effectif` |
+| **NAF Code & Label** | Char | `x_studio_naf` | `x_studio_naf` |
+| **LinkedIn URL** | Char | `x_studio_lien_linkedin` | `x_studio_lien_linkedin` |
+| **Annual Turnover** | Float / Char | `x_studio_chiffre_daffaires` | `x_studio_chiffre_daffaire_dernier_exercice` |
+| **Turnover Year** | Char | `x_studio_annee_ca` | `x_studio_annee_ca` |
+| **Restaurant Category** | Selection / Char | `x_studio_type_de_restaurant` | *(Standard)* |
+| **Headquarters Address** | Char | `x_studio_adresse_du_siege_social` | `street` |
+| **Website** | Char | `website` | `website` & `x_studio_web` |
+| **Is Company** | Boolean | *(N/A)* | `x_studio_est_une_entreprise` (`True`) |
 
 ---
 
-## ⚖️ Règles de Décision & Logique Métier
+## ⚖️ Decision Logic & Business Rules
 
 ```
                     ┌───────────────────────────────────────────────┐
-                    │ Est-ce une franchise nationale répertoriée ?  │
+                    │  Is it a listed national chain or franchise?  │
                     └───────────────────────┬───────────────────────┘
                                             │
-                           Oui ┌────────────┴────────────┐ Non
-                               ▼                         ▼
-                      ┌─────────────────┐       ┌────────────────────────────────────────┐
-                      │ 🚫 Prospect     │       │ Siège social dans le département 57 ?  │
-                      │    écarté       │       └───────────────────┬────────────────────┘
-                      └─────────────────┘                           │
-                                                   Oui ┌────────────┴────────────┐ Non
-                                                       ▼                         ▼
-                                              ┌─────────────────┐       ┌────────────────────────────────┐
-                                              │ 👑 Groupe Local │       │ Plus de 5 établissements ou    │
-                                              │    conservé     │       │ plus de 50 salariés ?          │
-                                              └─────────────────┘       └───────────────┬────────────────┘
-                                                                                        │
-                                                                       Oui ┌────────────┴────────────┐ Non
-                                                                           ▼                         ▼
-                                                                  ┌─────────────────┐       ┌────────────────────┐
-                                                                  │ 🚫 Groupe grand │       │ 📍 Adresse locale  │
-                                                                  │    compte écarté│       │    57 conservée    │
-                                                                  └─────────────────┘       └────────────────────┘
+                            Yes ┌───────────┴───────────┐ No
+                                ▼                       ▼
+                       ┌─────────────────┐     ┌────────────────────────────────────────┐
+                       │ 🚫 Exclude      │     │ Headquarters located in target dept?   │
+                       │    prospect     │     └───────────────────┬────────────────────┘
+                       └─────────────────┘                         │
+                                                   Yes ┌───────────┴───────────┐ No
+                                                       ▼                       ▼
+                                              ┌─────────────────┐     ┌────────────────────────────────┐
+                                              │ 👑 Keep local   │     │ More than 5 establishments or  │
+                                              │    group/venue  │     │ more than 50 employees?        │
+                                              └─────────────────┘     └───────────────┬────────────────┘
+                                                                                      │
+                                                                      Yes ┌───────────┴───────────┐ No
+                                                                          ▼                       ▼
+                                                                 ┌─────────────────┐     ┌────────────────────┐
+                                                                 │ 🚫 Exclude      │     │ 📍 Retain local    │
+                                                                 │    large group  │     │    branch address  │
+                                                                 └─────────────────┘     └────────────────────┘
 ```
 
 ---
 
-## 🧱 Architecture Technique & Fichiers
+## 🧱 Project Structure
 
 ```
 odoo_prospection/
 │
 ├── .github/
 │   └── workflows/
-│       └── daily_prospecting.yml   # Automatisation CI/CD nocturne (Cron 23:00 UTC)
+│       └── daily_prospecting.yml   # Scheduled CI/CD workflow (Cron 21:00 UTC)
 │
-├── config.py                       # Configuration centralisée & validation .env
-├── models.py                       # DTOs typés (CompanyProspect, Dirigeant, EnrichedContact)
-├── pappers_client.py               # Connecteur Pappers avec sessions résilientes & filtre franchises
-├── enricher.py                     # Moteur d'enrichissement (Serper Places/Web, Scraping, Claude AI)
-├── odoo_client.py                  # Connecteur XML-RPC Odoo, découverte Studio, gestion Contacts & Leads
-├── main.py                         # Orchestrateur CLI & gestion des logs rotatifs
+├── config.py                       # Centralized configuration & environment validation
+├── models.py                       # Typed data transfer objects (CompanyProspect, Dirigeant, EnrichedContact)
+├── pappers_client.py               # Resilient Pappers client with retry adapter and franchise filtering
+├── enricher.py                     # Multi-source enrichment engine (Serper Places/Web, Scraping, Claude AI)
+├── odoo_client.py                  # Odoo XML-RPC connector with Studio field introspection
+├── main.py                         # CLI orchestrator with persistent state management and rotating logs
 │
-├── requirements.txt                # Dépendances Python (requests, anthropic, python-dotenv, urllib3)
-├── .env                            # Variables d'environnement secrètes (ignoré par Git)
-├── prospection.log                 # Fichier de log rotatif de production (5 Mo)
-└── README.md                       # Documentation exhaustive du système
+├── requirements.txt                # Python dependencies
+├── .env.example                    # Environment variable template
+├── .gitignore                      # Git exclusion rules (secrets, state, logs)
+└── README.md                       # Complete project documentation
 ```
 
 ---
 
-## 🛠️ Installation & Configuration
+## 🛠️ Installation & Setup
 
-### 1. Prérequis
-- Python 3.10 ou supérieur.
-- Compte Odoo avec accès XML-RPC et droits d'écriture CRM / Contacts.
-- Clé API Pappers, clé API Serper.dev, clé API Anthropic Claude.
+### 1. Prerequisites
+- Python 3.10+
+- Odoo account with XML-RPC credentials and write permissions on CRM / Contacts.
+- API keys:
+  - [Pappers](https://www.pappers.fr/api)
+  - [Serper.dev](https://serper.dev)
+  - [Anthropic Claude](https://console.anthropic.com)
 
 ### 2. Installation
-```powershell
-# Cloner le dépôt
+```bash
+# Clone the repository
 git clone https://github.com/sabuuuu/odoo_prospection.git
 cd odoo_prospection
 
-# Créer un environnement virtuel (recommandé)
+# Create and activate a virtual environment
 python -m venv venv
-.\venv\Scripts\activate
 
-# Installer les dépendances
+# On Linux/macOS:
+source venv/bin/activate
+# On Windows (PowerShell):
+.\venv\Scripts\Activate.ps1
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 3. Fichier `.env`
-Créez un fichier `.env` à la racine :
+### 3. Environment Configuration
+Create a `.env` file at the root of the project:
 
 ```ini
-# Connexion Odoo
-ODOO_URL=https://votre-instance.odoo.com
-ODOO_DB=nom_de_votre_base
-ODOO_USER=votre_email@domaine.com
-ODOO_API_KEY=votre_cle_api_odoo
+# Odoo Connection Settings
+ODOO_URL=https://your-instance.odoo.com
+ODOO_DB=your_database_name
+ODOO_USER=your_email@domain.com
+ODOO_API_KEY=your_odoo_api_key
+
+# Odoo Pipeline Stages
 ODOO_TARGET_STAGE=Liste Restaurant
 ODOO_DEDUP_STAGES=Liste Restaurant,À contacter
 
-# Fournisseurs de Données & IA
-PAPPERS_API_KEY=votre_cle_pappers
-SERPER_API_KEY=votre_cle_serper
-ANTHROPIC_API_KEY=votre_cle_anthropic
-CLAUDE_MODEL=claude-haiku-4-5-20251001
+# Data & AI Providers
+PAPPERS_API_KEY=your_pappers_api_key
+SERPER_API_KEY=your_serper_api_key
+ANTHROPIC_API_KEY=your_anthropic_api_key
+CLAUDE_MODEL=claude-3-5-haiku-20241022
 
-# Paramètres de Prospection
+# Targeting Parameters
 TARGET_DEPARTMENTS=57
 TARGET_NAF_CODES=5610A,5610B,5610C
 DAILY_PROSPECT_LIMIT=10
-MIN_TURNOVER=
+MIN_TURNOVER=0
 ```
 
-### 4. Lancement
-```powershell
-# Exécution standard (ex: 2 prospects)
-python main.py --limit 2
+### 4. Running the Pipeline
+```bash
+# Standard run (e.g. process up to 10 prospects)
+python main.py --limit 10
 
-# Exécution en simulation (Dry Run - aucune écriture Odoo)
+# Dry Run (simulation mode - queries and qualifies without writing to Odoo)
 python main.py --dry-run --limit 5
 
-# Exécution complète quotidienne
+# Reset pagination cursor to restart from page 1
+python main.py --reset-state --limit 10
+
+# Full daily execution using default settings
 python main.py
 ```
 
 ---
 
-## ⏰ Automatisation CI/CD
+## ⏰ CI/CD Automation
 
-Le workflow GitHub Actions `.github/workflows/daily_prospecting.yml` est préconfiguré pour exécuter le pipeline chaque soir à **23:00 UTC**.
+The GitHub Actions workflow at [`.github/workflows/daily_prospecting.yml`](file:///.github/workflows/daily_prospecting.yml) can run the pipeline automatically on a nightly schedule (**21:00 UTC**).
 
-Pour l'activer, renseignez vos clés dans **GitHub > Settings > Secrets and variables > Actions** :
+To enable it, configure the following secrets in **GitHub > Settings > Secrets and variables > Actions**:
 - `ODOO_URL`, `ODOO_DB`, `ODOO_USER`, `ODOO_API_KEY`
 - `PAPPERS_API_KEY`, `SERPER_API_KEY`, `ANTHROPIC_API_KEY`
+
+Variables such as `ODOO_TARGET_STAGE`, `TARGET_DEPARTMENTS`, and `TARGET_NAF_CODES` can optionally be set as repository variables or customized in the workflow file.
