@@ -115,7 +115,7 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
         while total_added < limit and page <= max_pages:
             logger.info(f"\n🔎 Requête Pappers (Page {page} | NAF: {naf_query} | {dep_display} | Objectif: {limit - total_added} restants)...")
             
-            companies = pappers.search_companies(
+            search_result = pappers.search_companies(
                 code_naf=naf_query,
                 departement=dep_param,
                 ca_min=Config.MIN_TURNOVER,
@@ -123,15 +123,18 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
                 page=page
             )
 
-            if not companies:
-                logger.info(f"Fin des résultats Pappers pour {dep_display}. Remise à zéro du curseur pour les futures créations.")
-                dep_state["last_page"] = 0
-                state[dep_key] = dep_state
-                save_state(state)
+            # API error: keep the cursor untouched so the next run retries this page
+            if search_result is None:
+                logger.warning(f"Requête Pappers échouée pour {dep_display} (page {page}). Curseur conservé à la page {page - 1}.")
                 break
+
+            companies, has_more = search_result
+            page_added = 0
+            page_completed = True
 
             for company in companies:
                 if total_added >= limit:
+                    page_completed = False
                     break
 
                 # Deduplicate against existing CRM records
@@ -177,6 +180,7 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
                 if dry_run:
                     logger.info(f"[SIMULATION] Lead : {company.denomination} | Contact lié: {linked_partner_id} | Tags: {tags_to_add}")
                     total_added += 1
+                    page_added += 1
                 else:
                     lead_id = odoo.create_lead(
                         company=company,
@@ -187,14 +191,25 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
                     )
                     if lead_id:
                         total_added += 1
+                        page_added += 1
 
-            dep_state["last_page"] = page
+            # Limit reached mid-page: resume this page next run (already-created leads are skipped as duplicates)
+            if not page_completed:
+                dep_state["last_page"] = page - 1
+            elif has_more:
+                dep_state["last_page"] = page
+            else:
+                logger.info(f"Fin des résultats Pappers pour {dep_display}. Remise à zéro du curseur pour les futures créations.")
+                dep_state["last_page"] = 0
             dep_state["last_updated"] = datetime.now().isoformat()
-            dep_state["total_added"] = dep_state.get("total_added", 0) + total_added
+            dep_state["total_added"] = dep_state.get("total_added", 0) + page_added
             state[dep_key] = dep_state
-            
+
             if not dry_run:
                 save_state(state)
+
+            if not page_completed or not has_more:
+                break
 
             page += 1
 

@@ -1,6 +1,6 @@
 import requests
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from urllib3.util import Retry
 from requests.adapters import HTTPAdapter
 from models import CompanyProspect, Dirigeant
@@ -54,8 +54,12 @@ class PappersClient:
         ca_min: Optional[int] = None,
         limit: int = 10,
         page: int = 1
-    ) -> List[CompanyProspect]:
-        """Search for active independent businesses and local groups."""
+    ) -> Optional[Tuple[List[CompanyProspect], bool]]:
+        """Search for active independent businesses and local groups.
+
+        Returns (prospects, has_more_pages), or None if the API call failed.
+        prospects may be empty even when has_more_pages is True (whole page filtered out).
+        """
         params = {
             "api_token": self.api_key,
             "par_page": min(limit, 100),
@@ -77,8 +81,15 @@ class PappersClient:
             response.raise_for_status()
             data = response.json()
 
+            raw_results = data.get("resultats", [])
+            total = data.get("total")
+            if isinstance(total, int):
+                has_more = page * params["par_page"] < total
+            else:
+                has_more = len(raw_results) == params["par_page"]
+
             results: List[CompanyProspect] = []
-            for item in data.get("resultats", []):
+            for item in raw_results:
                 name = item.get("nom_entreprise") or item.get("denomination", "")
                 siege = item.get("siege", {})
                 enseigne = siege.get("enseigne", "")
@@ -153,9 +164,9 @@ class PappersClient:
                 )
                 results.append(prospect)
 
-            logger.info(f"Pappers : {len(results)} restaurants locaux qualifiés (page {page}).")
-            return results
+            logger.info(f"Pappers : {len(results)}/{len(raw_results)} restaurants locaux qualifiés (page {page}).")
+            return results, has_more
 
         except requests.RequestException as e:
             logger.error(f"Erreur API Pappers : {e}")
-            return []
+            return None

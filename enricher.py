@@ -32,6 +32,24 @@ IGNORED_EMAIL_DOMAINS = [
     'domain.com', 'email.com', 'test.com'
 ]
 
+_NULLABLE_STRING = {"type": ["string", "null"]}
+
+# Schéma imposé à Claude via les structured outputs (JSON toujours valide et complet)
+ENRICHMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "contact_name": _NULLABLE_STRING,
+        "job_title": _NULLABLE_STRING,
+        "email": _NULLABLE_STRING,
+        "phone": _NULLABLE_STRING,
+        "linkedin_url": _NULLABLE_STRING,
+        "website": _NULLABLE_STRING,
+        "summary": {"type": "string"}
+    },
+    "required": ["contact_name", "job_title", "email", "phone", "linkedin_url", "website", "summary"],
+    "additionalProperties": False
+}
+
 def is_valid_restaurant_website(url: Optional[str]) -> bool:
     """Verify whether a URL is likely a real restaurant website rather than an aggregator or directory."""
     if not url:
@@ -97,10 +115,10 @@ def create_resilient_session(retries: int = 3, backoff_factor: float = 0.5) -> r
 class ContactEnricher:
     """Multi-source enrichment engine combining Places API, web search, web scraping, and Claude AI."""
 
-    def __init__(self, anthropic_key: str, serper_key: Optional[str] = None, model: str = "claude-haiku-4-5-20251001"):
+    def __init__(self, anthropic_key: str, serper_key: Optional[str] = None, model: str = "claude-haiku-5-5"):
         self.claude = anthropic.Anthropic(api_key=anthropic_key)
         self.serper_key = (serper_key or "").strip()
-        self.model = model or "claude-haiku-4-5-20251001"
+        self.model = model or "claude-haiku-5-5"
         self.session = create_resilient_session()
         if self.serper_key:
             logger.info(f"⚡ Moteur Serper.dev actif ({self.serper_key[:6]}...).")
@@ -354,36 +372,28 @@ Extraits collectés (Google Maps, TripAdvisor, PagesJaunes, Editus, Site officie
 \"\"\"
 
 CONSIGNES :
-1. "phone" : {chosen_phone if chosen_phone else 'numéro au format français (ex: 03 XX XX XX XX) ou null'}.
-2. "website" : {website_to_scrape if website_to_scrape else 'url web ou null'}.
-3. "email" : {chosen_email if chosen_email else 'email ou null'}.
-4. "summary" : Note analytique complète (storytelling, spécialités, réputation, avis).
-
-RÉPONDS STRICTEMENT AU FORMAT JSON VALIDE :
-{{
-  "contact_name": "{dirigeant_nom if dirigeant_nom else 'null'}",
-  "job_title": "{dirigeant_role if dirigeant_role else 'Gérant'}",
-  "email": {f'"{chosen_email}"' if chosen_email else 'null'},
-  "phone": {f'"{chosen_phone}"' if chosen_phone else 'null'},
-  "linkedin_url": null,
-  "website": {f'"{website_to_scrape}"' if website_to_scrape else 'null'},
-  "summary": "Synthèse commerciale dense"
-}}"""
+1. "contact_name" : {dirigeant_nom if dirigeant_nom else 'nom du dirigeant ou null'}.
+2. "job_title" : {dirigeant_role if dirigeant_role else 'Gérant'}.
+3. "phone" : {chosen_phone if chosen_phone else 'numéro au format français (ex: 03 XX XX XX XX) ou null'}.
+4. "website" : {website_to_scrape if website_to_scrape else 'url web ou null'}.
+5. "email" : {chosen_email if chosen_email else 'email ou null'}.
+6. "linkedin_url" : null sauf si un profil LinkedIn du dirigeant apparaît dans les extraits.
+7. "summary" : Note analytique complète (storytelling, spécialités, réputation, avis), 150 à 250 mots."""
 
         try:
             response = self.claude.messages.create(
                 model=self.model,
-                max_tokens=1000,
-                temperature=0.2,
+                max_tokens=16000,
+                output_config={
+                    "effort": "low",
+                    "format": {"type": "json_schema", "schema": ENRICHMENT_SCHEMA}
+                },
                 messages=[{"role": "user", "content": prompt}]
             )
-            raw_text = response.content[0].text.strip()
-            
-            if "```json" in raw_text:
-                raw_text = raw_text.split("```json")[1].split("```")[0].strip()
-            elif "```" in raw_text:
-                raw_text = raw_text.split("```")[1].split("```")[0].strip()
+            if response.stop_reason != "end_turn":
+                raise ValueError(f"Réponse Claude incomplète (stop_reason={response.stop_reason})")
 
+            raw_text = next(b.text for b in response.content if b.type == "text")
             data = json.loads(raw_text)
             
             final_phone = chosen_phone or format_french_phone(data.get("phone"))

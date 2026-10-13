@@ -15,7 +15,7 @@ class Config:
     PAPPERS_API_KEY = os.getenv("PAPPERS_API_KEY", "")
 
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-    CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-5-haiku-20241022")
+    CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
 
     SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
 

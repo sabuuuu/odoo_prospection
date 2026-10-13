@@ -32,6 +32,15 @@
 #           python-version: '3.11'
 #           cache: 'pip'
 
+#       # Persist the Pappers pagination cursor (state.json) across runs: restore the latest
+#       # cache, then save a new one at the end of each successful run
+#       - name: Restore pagination state
+#         uses: actions/cache@v4
+#         with:
+#           path: state.json
+#           key: pappers-state-${{ github.run_id }}
+#           restore-keys: pappers-state-
+
 #       - name: Install dependencies
 #         run: |
 #           python -m pip install --upgrade pip
