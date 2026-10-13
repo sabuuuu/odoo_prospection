@@ -138,7 +138,12 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
                     break
 
                 # Deduplicate against existing CRM records
-                if odoo.lead_or_partner_exists(company.siren, company.denomination, stage_ids=dedup_stage_ids):
+                exists = odoo.lead_or_partner_exists(company.siren, company.denomination, stage_ids=dedup_stage_ids)
+                if exists is None:
+                    # Odoo unreachable: stop here and retry this page next run rather than risk duplicates
+                    page_completed = False
+                    break
+                if exists:
                     logger.info(f"⏭️  [DOUBLON] '{company.denomination}' (SIREN: {company.siren}) est déjà dans Odoo. Ignoré.")
                     total_skipped += 1
                     continue
@@ -173,7 +178,8 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
                 tags_to_add = []
                 if tag_id_oxo:
                     tags_to_add.append((4, tag_id_oxo))
-                if contact_info.has_real_contact and tag_id_dirigeant:
+                # Same condition as the director contact creation above
+                if contact_info.contact_name and contact_info.has_real_contact and tag_id_dirigeant:
                     tags_to_add.append((4, tag_id_dirigeant))
                     logger.info(f"🏷️  Tag 'Dirigeant' activé pour '{company.denomination}' (Tél: {contact_info.phone}, Email: {contact_info.email})")
 

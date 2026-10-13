@@ -172,37 +172,59 @@ class OdooClient:
         """Find multiple CRM stage IDs from a list of stage names."""
         return [sid for name in stage_names if (sid := self.get_stage_id(name))]
 
-    def lead_or_partner_exists(self, siren: str, company_name: str, stage_ids: Optional[list] = None) -> bool:
-        """Check whether a lead or partner already exists using SIREN or company name."""
-        try:
-            domain_lead = [
-                '|',
-                ['x_studio_siren', 'ilike', siren],
-                ['name', 'ilike', company_name]
-            ]
-            if stage_ids:
-                domain_lead.append(['stage_id', 'in', stage_ids])
+    def _lead_exists(self, domain: list) -> bool:
+        """Search crm.lead including archived/lost leads."""
+        lead_ids = self.models.execute_kw(
+            self.db, self.uid, self.api_key,
+            'crm.lead', 'search',
+            [domain],
+            {'limit': 1, 'context': {'active_test': False}}
+        )
+        return len(lead_ids) > 0
 
-            lead_ids = self.models.execute_kw(
-                self.db, self.uid, self.api_key,
-                'crm.lead', 'search',
-                [domain_lead],
-                {'limit': 1}
-            )
-            return len(lead_ids) > 0
+    def lead_or_partner_exists(self, siren: str, company_name: str, stage_ids: Optional[list] = None) -> Optional[bool]:
+        """Check whether a lead already exists using SIREN or company name.
+
+        SIREN matches count in any stage (archived/lost included); name matches are limited to stage_ids.
+        Returns None if Odoo could not be queried.
+        """
+        try:
+            siren_field = self.lead_field_map.get('siren')
+            siren_value = self._format_custom_value(siren, siren_field) if siren_field else False
+            if siren_value is not False and self._lead_exists([[siren_field['name'], '=', siren_value]]):
+                return True
+
+            domain_name = [['name', '=ilike', company_name]]
+            if stage_ids:
+                domain_name.append(['stage_id', 'in', stage_ids])
+            return self._lead_exists(domain_name)
         except Exception as e:
-            logger.warning(f"Erreur vérification doublon {company_name} : {e}")
-            return False
+            logger.error(f"Erreur vérification doublon {company_name} : {e}")
+            return None
 
     def create_company_contact(self, company: CompanyProspect, enriched: EnrichedContact) -> Optional[int]:
         """Create or retrieve a company partner record (res.partner) with custom fields."""
         try:
-            existing = self.models.execute_kw(
-                self.db, self.uid, self.api_key,
-                'res.partner', 'search',
-                [[['name', 'ilike', company.denomination], ['is_company', '=', True]]],
-                {'limit': 1}
-            )
+            # Match on the most reliable identifier available: SIREN, then SIRET, then exact name
+            lookup_domains = []
+            siren_field = self.partner_field_map.get('siren')
+            siren_value = self._format_custom_value(company.siren, siren_field) if siren_field else False
+            if siren_value is not False:
+                lookup_domains.append([[siren_field['name'], '=', siren_value]])
+            if company.siret:
+                lookup_domains.append([['company_registry', '=', company.siret]])
+            lookup_domains.append([['name', '=ilike', company.denomination]])
+
+            existing = []
+            for domain in lookup_domains:
+                existing = self.models.execute_kw(
+                    self.db, self.uid, self.api_key,
+                    'res.partner', 'search',
+                    [domain + [['is_company', '=', True]]],
+                    {'limit': 1}
+                )
+                if existing:
+                    break
             if existing:
                 logger.info(f"💼 Contact entreprise existant trouvé (ID: {existing[0]}) pour '{company.denomination}'")
                 return existing[0]

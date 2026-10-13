@@ -122,10 +122,10 @@ sequenceDiagram
 ### Step 2: Odoo Deduplication Check
 - Before consuming paid external enrichment requests (Serper, Claude), the pipeline checks Odoo via XML-RPC.
 - **Cross-verification criteria**:
-  - Search by `SIREN` identifier in custom Studio fields.
-  - Search by `Company Name` in CRM leads and partners.
-  - Optional stage-specific filtering (e.g., `Liste Restaurant`, `À contacter`).
+  - Exact `SIREN` match (Studio field) across **all** CRM leads, whatever their stage, including archived/lost leads.
+  - Exact (case-insensitive) `Company Name` match on CRM leads, optionally limited to `ODOO_DEDUP_STAGES` (e.g., `Liste Restaurant`, `À contacter`).
 - Existing companies are skipped immediately (`⏭️ [DOUBLON]`), preserving API credits.
+- If Odoo cannot be queried, the run stops on the current page and retries it next time instead of risking duplicates.
 
 ---
 

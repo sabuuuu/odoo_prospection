@@ -1,3 +1,4 @@
+import re
 import requests
 import logging
 from typing import List, Optional, Tuple
@@ -8,7 +9,7 @@ from models import CompanyProspect, Dirigeant
 logger = logging.getLogger(__name__)
 
 NATIONAL_CHAINS_EXCLUDE = [
-    "mcdonald", "mc donald", "burger king", "kfc", "quick", "subway", "o'tacos", "otacos",
+    "mcdonald", "mcdonalds", "mc donald", "burger king", "kfc", "quick", "subway", "o'tacos", "otacos",
     "buffalo grill", "courtepaille", "hippopotamus", "bistrot regent", "bistrot régent",
     "flunch", "autogrill", "crescendo", "del arte", "pizza del arte", "domino's", "dominos",
     "pizza hut", "class croute", "class'croute", "brioche doree", "brioche dorée", "paul",
@@ -19,6 +20,11 @@ NATIONAL_CHAINS_EXCLUDE = [
     "crous", "elior", "sodexo", "compass group", "serenest", "api restauration", "dupont restauration",
     "ansemble", "score services", "eurest", "medirest", "newrest"
 ]
+
+# Whole-word matching so "paul" doesn't exclude "Chez Pauline" nor "crous" exclude "La Croustade"
+NATIONAL_CHAINS_PATTERN = re.compile(
+    r"(?<!\w)(?:" + "|".join(re.escape(chain) for chain in NATIONAL_CHAINS_EXCLUDE) + r")(?!\w)"
+)
 
 def create_resilient_session(retries: int = 3, backoff_factor: float = 0.5) -> requests.Session:
     """Create an HTTP session configured with automatic retry on transient errors."""
@@ -45,7 +51,7 @@ class PappersClient:
     def _is_national_chain(self, company_name: str, enseigne: str = "") -> bool:
         """Check if the business matches a known national chain or franchise."""
         full_text = f"{company_name} {enseigne}".lower()
-        return any(chain in full_text for chain in NATIONAL_CHAINS_EXCLUDE)
+        return NATIONAL_CHAINS_PATTERN.search(full_text) is not None
 
     def search_companies(
         self,
@@ -103,7 +109,7 @@ class PappersClient:
                 
                 # Exclude distant large enterprises (>5 establishments or >50 employees); retain local branch address
                 if departement and not siege_cp.startswith(str(departement)):
-                    if len(matching_etabs) > 5 or item.get("effectif_min", 0) > 50:
+                    if len(matching_etabs) > 5 or (item.get("effectif_min") or 0) > 50:
                         logger.info(f"🚫 [GROUPE NATIONAL EXCLU] '{name}' (Siège: {siege.get('ville')}) ignoré.")
                         continue
                     
