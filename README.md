@@ -129,44 +129,50 @@ sequenceDiagram
 
 ---
 
-### Step 3: Legal Representative Resolution
-- **Primary Source**: Company officers returned directly by Pappers.
-- **Public Registry Fallback (`data.gouv.fr`)**: When legal representative data is missing in Pappers (common for micro-enterprises or recently incorporated SAS companies), the pipeline queries the public French Business Directory API (`recherche-entreprises.api.gouv.fr`).
-- **Legal Entity Support**: Handles holding companies acting as corporate presidents or managing partners.
+### Step 3: Full Registry Profile & Officers
+- **Full Pappers profile (`/entreprise`)**: fetched only for new prospects (after deduplication) — all officers, beneficial owners, multi-year financials, establishments.
+- **Public registry (`recherche-entreprises.api.gouv.fr`)**: always queried (free) and cross-checked with Pappers.
+- Officers who are natural persons are merged and deduplicated; corporate officers (holdings) are kept in the dossier but not searched on Google.
 
 ---
 
-### Step 4: Multi-Source Enrichment Pipeline
-Each newly identified prospect undergoes a sequence of 3 targeted requests via **Serper.dev**:
-1. **Google Maps Places (`/places`)**:
-   - Extracts average rating (e.g., 4.5/5), review count, business category, normalized address, website, and certified Google My Business (GMB) phone number.
-2. **General Google Web Search (`/search`, top 10)**:
-   - Query: `"{Name}" {City} restaurant phone`
-   - Captures local press mentions, social profiles (Facebook, Instagram), and customer reviews.
-3. **Targeted Professional Directories (`/search`, top 5)**:
-   - Query: `"{Name}" {City} site:tripadvisor.fr OR site:pagesjaunes.fr OR site:editus.lu OR site:mappy.com`
-   - Captures landlines and business listings registered on local directories.
+### Step 4: Web Collection (Serper.dev)
+For the restaurant:
+1. **Google Maps Places** — rating, review count, category, address, website, Google Business phone.
+2. **Google Web (top 10)** — `"{Name}" {City} restaurant téléphone`, plus the knowledge panel.
+3. **Directories (top 5)** — TripAdvisor, PagesJaunes, Editus, Mappy.
+4. **Social pages (top 5)** — `"{Name}" {City} site:facebook.com OR site:instagram.com`.
+
+For the officers (up to 3):
+5. **Google Web (top 10)** — `"{First name} {Last name}" {Name} {City}`.
+6. **Social profiles** (main officer) — `"{First name} {Last name}" {City} site:linkedin.com OR site:facebook.com OR site:instagram.com`. LinkedIn is never scraped directly; only Google results are used.
+
+Expect up to ~7 Serper requests per prospect.
 
 ---
 
-### Step 5: Direct Website Scraping
-- **Directory and Spam Domain Filtering (`is_valid_restaurant_website`)**:
-  - Automatically discards free site builders (`*.blogspot.com`, `*.wordpress.com`, `*.wixsite.com`, `*.carrd.co`) and aggregators/spam domains (`insurance`, `casino`, `crypto`).
-- **Targeted Domain Extraction**:
-  - When a legitimate website exists, the pipeline executes HTTP requests to `/` and `/contact`.
-  - Cleans HTML markup (strips `<script>`, `<style>`, `<svg>`, and comment tags).
-  - Identifies `tel:` and `mailto:` links.
-  - Validates standard French phone formats: 10 digits (`03 XX XX XX XX` for Grand-Est regional landlines, `06/07 XX XX XX XX` for mobile lines, or `09 XX XX XX XX`).
+### Step 5: Official Website Scraping
+- Directories, aggregators and free site builders are ignored (`is_valid_restaurant_website`).
+- The homepage is scraped, then up to 5 internal pages whose URL suggests contact, legal notice (`mentions-legales`), about, history or team — legal notices often name the manager and give a direct email. Falls back to `/contact` and `/mentions-legales`.
+- HTML is cleaned (`<script>`, `<style>`, `<svg>`, comments removed) and each page kept up to 8,000 characters.
+
+### Facebook & Instagram pages
+Small restaurants often publish their email and phone only on Facebook. The restaurant's own pages are read directly (up to 2 per network):
+- **Selection**: links from its website or Google Maps listing, and Facebook/Instagram results of any Google search whose title matches the business name. If none is found, one extra query `{Name} {City} facebook` is made.
+- **Facebook**: the public "Contact info" tab (`/about_contact_and_basic_info`): address, phone, email, website, linked Instagram account, rating, price range and recent posts. If no website was found, the one declared on the Facebook page is scraped.
+- **Instagram**: display name, bio and follower count (business email and phone require a logged-in session and are not available).
+- Both networks only serve this content to search engine crawlers, so these pages are requested with a crawler user agent. It may stop working if Meta changes its pages; the rest of the pipeline is unaffected.
 
 ---
 
-### Step 6: Qualification & Commercial Synthesis (Claude AI)
-- **Model**: `claude-3-5-haiku-20241022` / `claude-haiku-4-5-20251001` (Anthropic).
-- **Role**: Expert B2B sales analyst specializing in the hospitality industry.
-- **Mission**:
-  - Synthesize collected intelligence (officer background, head count, founding date, online reputation, culinary concept, and market dynamics).
-  - Draft a concise, high-value briefing note formatted for immediate CRM sales review.
-  - Return structured JSON with validated direct contact details.
+### Step 6: Prospect Dossier & Claude Analysis
+- Everything collected is assembled into a **JSON dossier** per prospect: `pappers` (search result + full profile), `registre_public`, `dirigeants_identifies`, `web` (Google Maps, Google, directories, officer searches, website pages) and `extraction_automatique` (phones/emails found by regex).
+- **Claude (`claude-haiku-5-5`)** receives the dossier as JSON and answers with **structured outputs** (enforced JSON schema):
+  - `etablissement`: phone, email, website, Facebook/Instagram, cuisine, price range, Google rating and review count, opening hours, specialities.
+  - `dirigeants`: each officer/owner with their own phone, email, LinkedIn and the **sources** of each piece of information.
+  - `note_recap`: a 120–200 word briefing paragraph for sales.
+- **Anti-hallucination check**: any phone, email or URL returned by Claude that does not appear in the dossier is discarded, and the venue's own phone/email is never counted as an officer's direct contact.
+- The dossier, Claude's raw answer (`analyse_claude`) and the final validated data (`resultat_final`) are saved to `data/prospects/{siren}.json` (`DOSSIER_DIR`, git-ignored) and **attached to the Odoo lead**.
 
 ---
 
@@ -178,8 +184,8 @@ A robust XML-RPC client manages records in Odoo:
    - Fills address, postal code, city, country (France - ID: 75), website, and SIRET (`company_registry`).
    - Populates Studio custom fields (SIREN, NAF, legal structure, employee headcount, annual revenue, revenue year, `est_une_entreprise: True`).
 
-2. **Contacts Module (`res.partner`) — Director Contact** *(Conditional)*:
-   - Created **only** if a verified direct phone number or email was confirmed.
+2. **Contacts Module (`res.partner`) — Director Contacts** *(Conditional)*:
+   - One per officer for whom a direct phone, email or LinkedIn profile was found, with their own details (never the venue's).
    - Individual record (`is_company: False`) linked to the parent company via `parent_id`.
 
 3. **CRM Module (`crm.lead`) — Opportunity / Lead**:
@@ -189,6 +195,8 @@ A robust XML-RPC client manages records in Odoo:
    - **Dynamic Tagging**:
      - `Prospection IA OXO`: Systematically appended.
      - `Dirigeant`: Appended **only** when direct officer contact details are confirmed.
+   - **Description**: Claude's recap paragraph followed by key facts (cuisine, rating, social pages) and the officers with their sources.
+   - **Attachment**: the full JSON dossier (`dossier_{siren}.json`).
 
 ---
 
@@ -329,6 +337,14 @@ python main.py --limit 10
 
 # Dry Run (simulation mode - queries and qualifies without writing to Odoo)
 python main.py --dry-run --limit 5
+
+# Development: every run fills data/prospection.csv (one row per SIREN, updated if processed again).
+# With --dry-run nothing is written to Odoo (Odoo is still read for deduplication)
+python main.py --dry-run --limit 10
+
+# Other CSV file / no CSV
+python main.py --dry-run --csv data/test.csv
+python main.py --no-csv
 
 # Reset pagination cursor to restart from page 1
 python main.py --reset-state --limit 10

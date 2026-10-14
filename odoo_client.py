@@ -1,10 +1,42 @@
 import xmlrpc.client
+import base64
+import html
+import json
 import logging
 import re
 from typing import Dict, Any, Optional, List
-from models import CompanyProspect, EnrichedContact
+from models import CompanyProspect, DirigeantContact, EnrichedContact
 
 logger = logging.getLogger(__name__)
+
+DETAIL_LABELS = {
+    'type_cuisine': 'Cuisine',
+    'gamme_prix': 'Gamme de prix',
+    'note_google': 'Note Google',
+    'nombre_avis': "Nombre d'avis",
+    'horaires': 'Horaires',
+    'specialites': 'Spécialités',
+    'reseau_franchise': 'Réseau / franchise',
+    'confiance_identification': 'Identification en ligne',
+    'points_a_verifier': 'À vérifier',
+}
+
+def build_note_html(enriched: EnrichedContact) -> str:
+    """AI recap paragraph followed by key facts and identified officers, as Odoo HTML."""
+    esc = lambda v: html.escape(str(v))
+    facts = [
+        f"<li><b>{label}</b> : {esc(', '.join(v) if isinstance(v, list) else v)}</li>"
+        for key, label in DETAIL_LABELS.items() if (v := enriched.details.get(key))
+    ]
+    for label, link in (('Facebook', enriched.facebook_url), ('Instagram', enriched.instagram_url)):
+        if link:
+            facts.append(f"<li><b>{label}</b> : {esc(link)}</li>")
+    for d in enriched.dirigeants:
+        infos = [x for x in (d.role, d.telephone, d.email, d.linkedin_url) if x]
+        sources = f" <i>(sources : {esc(', '.join(d.sources))})</i>" if d.sources else ""
+        facts.append(f"<li><b>Dirigeant</b> : {esc(d.nom_complet)}{' — ' + esc(' | '.join(infos)) if infos else ''}{sources}</li>")
+    note = f"<p>{esc(enriched.summary)}</p>"
+    return note + (f"<ul>{''.join(facts)}</ul>" if facts else "")
 
 class OdooClient:
     """XML-RPC client for managing Odoo CRM leads and contacts."""
@@ -131,7 +163,7 @@ class OdooClient:
         except Exception:
             return False
 
-    def get_or_create_tag(self, tag_name: str = "Prospection IA OXO") -> Optional[int]:
+    def get_or_create_tag(self, tag_name: str = "Prospection IA OXO", create: bool = True) -> Optional[int]:
         """Find an existing CRM tag or create it if not present."""
         try:
             tag_ids = self.models.execute_kw(
@@ -142,6 +174,8 @@ class OdooClient:
             )
             if tag_ids:
                 return tag_ids[0]
+            if not create:
+                return None
             
             new_tag_id = self.models.execute_kw(
                 self.db, self.uid, self.api_key,
@@ -240,7 +274,7 @@ class OdooClient:
                 'email': enriched.email or False,
                 'website': enriched.website or False,
                 'company_registry': company.siret or False,
-                'comment': enriched.summary or False,
+                'comment': build_note_html(enriched),
             }
 
             custom_values = {
@@ -250,7 +284,6 @@ class OdooClient:
                 'forme_juridique': company.forme_juridique or False,
                 'nombre_salaries': company.tranche_effectif or False,
                 'naf': f"{company.code_naf} {company.libelle_code_naf}".strip() or False,
-                'linkedin': enriched.linkedin_url or False,
                 'chiffre_affaires': company.chiffre_affaires or False,
                 'annee_ca': company.annee_ca or False,
                 'web': enriched.website or False,
@@ -278,18 +311,21 @@ class OdooClient:
             logger.error(f"Erreur création contact entreprise '{company.denomination}' : {e}")
             return None
 
-    def create_director_contact(self, enriched: EnrichedContact, company_partner_id: int, company_name: str) -> Optional[int]:
-        """Create an individual contact (res.partner) linked to the company."""
+    def create_director_contact(self, dirigeant: DirigeantContact, company_partner_id: int, company_name: str) -> Optional[int]:
+        """Create an individual contact (res.partner) linked to the company, with the officer's own details."""
         try:
             payload = {
-                'name': enriched.contact_name,
+                'name': dirigeant.nom_complet,
                 'is_company': False,
                 'parent_id': company_partner_id,
-                'function': enriched.job_title or 'Gérant',
-                'phone': enriched.phone or False,
-                'email': enriched.email or False,
-                'comment': f"Dirigeant de {company_name}",
+                'function': dirigeant.role or 'Gérant',
+                'phone': dirigeant.telephone or False,
+                'email': dirigeant.email or False,
+                'comment': f"Dirigeant de {company_name}" + (f" (sources : {', '.join(dirigeant.sources)})" if dirigeant.sources else ""),
             }
+            linkedin_field = self.partner_field_map.get('linkedin')
+            if linkedin_field and dirigeant.linkedin_url:
+                payload[linkedin_field['name']] = dirigeant.linkedin_url
             sanitized_payload = {k: (False if v is None else v) for k, v in payload.items()}
 
             partner_id = self.models.execute_kw(
@@ -297,10 +333,10 @@ class OdooClient:
                 'res.partner', 'create',
                 [sanitized_payload]
             )
-            logger.info(f"👤 Contact dirigeant créé (ID: {partner_id}) : '{enriched.contact_name}'")
+            logger.info(f"👤 Contact dirigeant créé (ID: {partner_id}) : '{dirigeant.nom_complet}'")
             return partner_id
         except Exception as e:
-            logger.error(f"Erreur création contact dirigeant '{enriched.contact_name}' : {e}")
+            logger.error(f"Erreur création contact dirigeant '{dirigeant.nom_complet}' : {e}")
             return None
 
     def create_lead(
@@ -313,20 +349,22 @@ class OdooClient:
     ) -> Optional[int]:
         """Create a CRM lead (crm.lead) populated with company data and AI qualification note."""
         try:
-            full_contact = f"{company.denomination}, {enriched.contact_name}" if enriched.contact_name else company.denomination
+            principal = enriched.principal
+            full_contact = f"{company.denomination}, {principal.nom_complet}" if principal else company.denomination
 
             payload = {
                 'name': company.denomination,
                 'partner_name': company.denomination,
                 'contact_name': full_contact,
-                'function': enriched.job_title or "Direction",
-                'email_from': enriched.email or False,
-                'phone': enriched.phone or False,
+                'function': (principal.role if principal else None) or "Direction",
+                # Officer's direct line when found, otherwise the venue's
+                'email_from': (principal.email if principal else None) or enriched.email or False,
+                'phone': (principal.telephone if principal else None) or enriched.phone or False,
                 'website': enriched.website or False,
                 'street': company.adresse or False,
                 'city': company.ville or False,
                 'zip': company.code_postal or False,
-                'description': enriched.summary or ""
+                'description': build_note_html(enriched)
             }
 
             if stage_id:
@@ -343,7 +381,7 @@ class OdooClient:
                 'forme_juridique': company.forme_juridique or False,
                 'nombre_salaries': company.tranche_effectif or False,
                 'naf': f"{company.code_naf} {company.libelle_code_naf}".strip() or False,
-                'linkedin': enriched.linkedin_url or False,
+                'linkedin': (principal.linkedin_url if principal else None) or False,
                 'chiffre_affaires': company.chiffre_affaires or False,
                 'annee_ca': company.annee_ca or False,
                 'type_de_restaurant': company.libelle_code_naf or False,
@@ -368,4 +406,26 @@ class OdooClient:
             return lead_id
         except Exception as e:
             logger.error(f"Erreur création Lead Odoo : {e}")
+            return None
+
+    def attach_json(self, res_model: str, res_id: int, filename: str, data: dict) -> Optional[int]:
+        """Attach a JSON document to an Odoo record (visible in its chatter attachments)."""
+        try:
+            content = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
+            attachment_id = self.models.execute_kw(
+                self.db, self.uid, self.api_key,
+                'ir.attachment', 'create',
+                [{
+                    'name': filename,
+                    'type': 'binary',
+                    'datas': base64.b64encode(content).decode('ascii'),
+                    'res_model': res_model,
+                    'res_id': res_id,
+                    'mimetype': 'application/json',
+                }]
+            )
+            logger.info(f"📎 Dossier JSON joint ({filename}, ID: {attachment_id})")
+            return attachment_id
+        except Exception as e:
+            logger.error(f"Erreur pièce jointe {filename} : {e}")
             return None

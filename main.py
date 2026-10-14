@@ -3,12 +3,15 @@ import json
 import logging
 import sys
 import os
+from dataclasses import asdict
+from typing import Optional
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from config import Config
 from odoo_client import OdooClient
 from pappers_client import PappersClient
 from enricher import ContactEnricher
+from csv_export import CsvExporter
 
 STATE_FILE = "state.json"
 
@@ -54,7 +57,20 @@ def save_state(state: dict):
     except Exception as e:
         logger.warning(f"Impossible d'enregistrer {STATE_FILE} : {e}")
 
-def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state: bool = False):
+def save_dossier(dossier: dict) -> Optional[str]:
+    """Save a prospect's dossier (raw sources + Claude analysis) as JSON; returns its path."""
+    try:
+        os.makedirs(Config.DOSSIER_DIR, exist_ok=True)
+        path = os.path.join(Config.DOSSIER_DIR, f"{dossier['meta']['siren']}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(dossier, f, indent=2, ensure_ascii=False)
+        logger.info(f"💾 Dossier enregistré : {path}")
+        return path
+    except Exception as e:
+        logger.warning(f"Impossible d'enregistrer le dossier JSON : {e}")
+        return None
+
+def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state: bool = False, csv_path: Optional[str] = None):
     logger.info("=" * 60)
     logger.info("🚀 Démarrage du pipeline de prospection automatisé")
     if dry_run:
@@ -88,10 +104,11 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
     target_stage_id = odoo.get_stage_id(Config.ODOO_TARGET_STAGE)
     dedup_stage_ids = odoo.get_stage_ids(Config.ODOO_DEDUP_STAGES)
     
-    tag_id_oxo = odoo.get_or_create_tag("Prospection IA OXO")
-    tag_id_dirigeant = odoo.get_or_create_tag("Dirigeant")
+    tag_id_oxo = odoo.get_or_create_tag("Prospection IA OXO", create=not dry_run)
+    tag_id_dirigeant = odoo.get_or_create_tag("Dirigeant", create=not dry_run)
 
     limit = limit_override or Config.DAILY_PROSPECT_LIMIT
+    csv_export = CsvExporter(csv_path) if csv_path else None
     total_added = 0
     total_skipped = 0
 
@@ -137,6 +154,12 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
                     page_completed = False
                     break
 
+                # Dev trials: get new prospects each time instead of reprocessing those already in the CSV
+                if dry_run and csv_export and company.siren in csv_export.rows:
+                    logger.info(f"⏭️  [DÉJÀ DANS LE CSV] '{company.denomination}' (SIREN: {company.siren}). Ignoré.")
+                    total_skipped += 1
+                    continue
+
                 # Deduplicate against existing CRM records
                 exists = odoo.lead_or_partner_exists(company.siren, company.denomination, stage_ids=dedup_stage_ids)
                 if exists is None:
@@ -150,41 +173,51 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
 
                 logger.info(f"✨ Nouveau prospect : '{company.denomination}' ({company.ville}) - SIREN: {company.siren}")
 
-                contact_info = enricher.enrich_contact(
-                    company_name=company.denomination,
-                    city=company.ville,
-                    siren=company.siren,
-                    dirigeant=company.dirigeant,
-                    tranche_effectif=company.tranche_effectif,
-                    annee_ouverture=company.annee_ouverture or ""
-                )
+                # Full Pappers profile (all officers, beneficial owners, financials), only for new prospects
+                fiche = pappers.get_company_details(company.siren)
+                if fiche:
+                    pappers.apply_company_details(company, fiche)
+                    if pappers.is_chain(company):
+                        logger.info(f"🚫 [CHAÎNE/FRANCHISE EXCLUE] '{company.denomination}' (enseignes : {company.enseignes or company.enseigne}) ignoré.")
+                        continue
+                    if company.etablissement_ferme:
+                        logger.info(f"🚫 [ÉTABLISSEMENT FERMÉ] '{company.denomination}' : aucun établissement ouvert. Ignoré.")
+                        continue
 
-                # Create company partner and optional director contact
+                dossier = enricher.collect(company, fiche)
+                contact_info, analysis = enricher.analyze(company, dossier)
+                dossier["analyse_claude"] = analysis
+                dossier["resultat_final"] = asdict(contact_info)
+                dossier_path = save_dossier(dossier)
+                lead_id = None
+
+                # Company partner, then one contact per officer with their own details
                 company_partner_id = None
-                director_partner_id = None
-                
+                director_partner_ids = {}
+
                 if not dry_run:
                     company_partner_id = odoo.create_company_contact(company, contact_info)
-                    
-                    if contact_info.contact_name and contact_info.has_real_contact and company_partner_id:
-                        director_partner_id = odoo.create_director_contact(
-                            contact_info,
-                            company_partner_id,
-                            company.denomination
-                        )
 
-                linked_partner_id = director_partner_id or company_partner_id
+                    if company_partner_id:
+                        for dirigeant in contact_info.dirigeants:
+                            if dirigeant.has_direct_contact or dirigeant.linkedin_url:
+                                partner_id = odoo.create_director_contact(dirigeant, company_partner_id, company.denomination)
+                                if partner_id:
+                                    director_partner_ids[dirigeant.nom_complet] = partner_id
+
+                principal = contact_info.principal
+                linked_partner_id = (director_partner_ids.get(principal.nom_complet) if principal else None) or company_partner_id
 
                 tags_to_add = []
                 if tag_id_oxo:
                     tags_to_add.append((4, tag_id_oxo))
-                # Same condition as the director contact creation above
-                if contact_info.contact_name and contact_info.has_real_contact and tag_id_dirigeant:
+                # Only when an officer's own phone or email was found
+                if contact_info.has_direct_director_contact and tag_id_dirigeant:
                     tags_to_add.append((4, tag_id_dirigeant))
-                    logger.info(f"🏷️  Tag 'Dirigeant' activé pour '{company.denomination}' (Tél: {contact_info.phone}, Email: {contact_info.email})")
+                    logger.info(f"🏷️  Tag 'Dirigeant' activé pour '{company.denomination}' ({principal.nom_complet} - Tél: {principal.telephone}, Email: {principal.email})")
 
                 if dry_run:
-                    logger.info(f"[SIMULATION] Lead : {company.denomination} | Contact lié: {linked_partner_id} | Tags: {tags_to_add}")
+                    logger.info(f"[SIMULATION] Lead : {company.denomination} | Dirigeants: {[d.nom_complet for d in contact_info.dirigeants]} | Tags: {tags_to_add}")
                     total_added += 1
                     page_added += 1
                 else:
@@ -196,8 +229,12 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
                         partner_id=linked_partner_id
                     )
                     if lead_id:
+                        odoo.attach_json('crm.lead', lead_id, f"dossier_{company.siren}.json", dossier)
                         total_added += 1
                         page_added += 1
+
+                if csv_export:
+                    csv_export.add(company, contact_info, analysis is not None, dossier_path, lead_id)
 
             # Limit reached mid-page: resume this page next run (already-created leads are skipped as duplicates)
             if not page_completed:
@@ -225,6 +262,8 @@ def run_pipeline(dry_run: bool = False, limit_override: int = None, reset_state:
     logger.info(f"   • Doublons évités : {total_skipped}")
     for dep, s in state.items():
         logger.info(f"   • Curseur Pappers [{dep}] : Page {s.get('last_page', 1)} enregistrée")
+    if csv_export:
+        logger.info(f"   • Export CSV : {csv_export.path}")
     logger.info("=" * 60)
 
 if __name__ == "__main__":
@@ -232,6 +271,10 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Simulate pipeline execution without writing to Odoo")
     parser.add_argument("--limit", type=int, help="Maximum number of prospects to process")
     parser.add_argument("--reset-state", action="store_true", help="Reset Pappers pagination cursor back to page 1")
+    parser.add_argument("--csv", metavar="PATH", default=Config.CSV_PATH,
+                        help=f"Cumulative CSV of processed prospects (default: {Config.CSV_PATH})")
+    parser.add_argument("--no-csv", action="store_true", help="Disable the CSV export")
     args = parser.parse_args()
 
-    run_pipeline(dry_run=args.dry_run, limit_override=args.limit, reset_state=args.reset_state)
+    run_pipeline(dry_run=args.dry_run, limit_override=args.limit, reset_state=args.reset_state,
+                 csv_path=None if args.no_csv else args.csv)

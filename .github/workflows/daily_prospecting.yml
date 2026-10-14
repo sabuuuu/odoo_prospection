@@ -70,3 +70,13 @@
 #             ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"
 #           fi
 #           python main.py $ARGS
+
+#       # Prospect dossiers are also attached to each Odoo lead; keep a copy of the run's files
+#       - name: Upload prospect dossiers
+#         if: always()
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: prospect-dossiers-${{ github.run_id }}
+#           path: data/prospects/
+#           retention-days: 30
+#           if-no-files-found: ignore

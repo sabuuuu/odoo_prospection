@@ -37,3 +37,6 @@ ENV/
 # Local logs & pipeline state
 *.log
 state.json
+
+# Prospect dossiers (contain personal data)
+data/

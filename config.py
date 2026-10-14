@@ -23,6 +23,10 @@ class Config:
     TARGET_DEPARTMENTS = [dep.strip() for dep in os.getenv("TARGET_DEPARTMENTS", "57").split(",") if dep.strip()]
     MIN_TURNOVER = int(os.getenv("MIN_TURNOVER", "0")) if os.getenv("MIN_TURNOVER") else None
     DAILY_PROSPECT_LIMIT = int(os.getenv("DAILY_PROSPECT_LIMIT", "10"))
+    # Where prospect dossiers (raw sources + Claude analysis) are saved as JSON
+    DOSSIER_DIR = os.getenv("DOSSIER_DIR", "data/prospects")
+    # Single cumulative CSV of all processed prospects (one row per SIREN)
+    CSV_PATH = os.getenv("CSV_PATH", "data/prospection.csv")
 
     @classmethod
     def validate(cls):

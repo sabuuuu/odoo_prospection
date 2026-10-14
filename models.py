@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 @dataclass
 class Dirigeant:
@@ -33,25 +33,52 @@ class CompanyProspect:
     tranche_effectif: str = "Non précisé"
     date_creation: Optional[str] = None
     annee_ouverture: Optional[str] = None
-    dirigeant: Optional[Dirigeant] = None
+    enseigne: Optional[str] = None  # Trade name (often the real restaurant name)
+    enseignes: List[str] = field(default_factory=list)  # All trade names of open establishments
+    etablissement_ferme: bool = False  # Every establishment is closed
+    dirigeants: List[Dirigeant] = field(default_factory=list)
+    raw: Dict[str, Any] = field(default_factory=dict, repr=False)  # Raw Pappers search result
+
+    @property
+    def dirigeant(self) -> Optional[Dirigeant]:
+        return self.dirigeants[0] if self.dirigeants else None
 
     @property
     def full_address(self) -> str:
         return f"{self.adresse} {self.code_postal} {self.ville}".strip()
 
 @dataclass
-class EnrichedContact:
-    """Enriched contact information and AI qualification analysis."""
-    contact_name: Optional[str] = None
-    job_title: Optional[str] = None
-    phone: Optional[str] = None
+class DirigeantContact:
+    """Officer/owner identified during enrichment, with their own contact details."""
+    nom_complet: str
+    role: Optional[str] = None
+    telephone: Optional[str] = None
     email: Optional[str] = None
-    website: Optional[str] = None
     linkedin_url: Optional[str] = None
-    summary: str = ""
-    dirigeant_found: bool = False
+    sources: List[str] = field(default_factory=list)
 
     @property
-    def has_real_contact(self) -> bool:
-        """Check if direct contact information (phone or email) was identified."""
-        return bool(self.phone or self.email)
+    def has_direct_contact(self) -> bool:
+        """Personal phone or email found for this person."""
+        return bool(self.telephone or self.email)
+
+@dataclass
+class EnrichedContact:
+    """Enriched venue/officer contact information and AI qualification note."""
+    phone: Optional[str] = None      # Venue phone
+    email: Optional[str] = None      # Venue email
+    website: Optional[str] = None
+    facebook_url: Optional[str] = None
+    instagram_url: Optional[str] = None
+    dirigeants: List[DirigeantContact] = field(default_factory=list)
+    details: Dict[str, Any] = field(default_factory=dict)  # Cuisine, price range, Google rating, opening hours...
+    summary: str = ""
+
+    @property
+    def principal(self) -> Optional[DirigeantContact]:
+        """Main contact: first officer with direct contact details, else the first officer."""
+        return next((d for d in self.dirigeants if d.has_direct_contact), self.dirigeants[0] if self.dirigeants else None)
+
+    @property
+    def has_direct_director_contact(self) -> bool:
+        return any(d.has_direct_contact for d in self.dirigeants)
